@@ -2,12 +2,11 @@
 //!
 //! Textures are generated in code so the demo needs no image-loading
 //! dependency; pixels are linear RGBA8, which is the format
-//! [`Renderer::create_texture`](mikan_render::Renderer::create_texture)
+//! [`Renderer::create_texture`](mikan::Renderer::create_texture)
 //! expects. The atlas holds one tile per demo element, and the demo selects a
 //! tile with [`tile_uv`] — the same pattern a loaded sprite sheet would use.
 
-use mikan_core::Color;
-use mikan_render::UvRect;
+use mikan::{Color, UvRect};
 
 /// Edge length of one tile, in pixels.
 pub const TILE_SIZE: u32 = 32;

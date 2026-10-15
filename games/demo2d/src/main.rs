@@ -11,8 +11,7 @@ mod square;
 
 use std::process::ExitCode;
 
-use mikan_core::{EngineConfig, init_logging};
-use mikan_platform::PlatformError;
+use mikan::{EngineConfig, PlatformError, init_logging};
 use thiserror::Error;
 
 use crate::cli::{Cli, CliError};
@@ -23,9 +22,6 @@ use crate::demo::Demo;
 enum RunError {
     #[error(transparent)]
     Cli(#[from] CliError),
-
-    #[error(transparent)]
-    Config(#[from] mikan_core::ConfigError),
 
     #[error(transparent)]
     Platform(#[from] PlatformError),
@@ -59,7 +55,6 @@ fn run() -> Result<(), RunError> {
         title: "Mikan - Demo 2D (WASD to move, Esc to quit)".to_string(),
         ..EngineConfig::default()
     };
-    config.validate()?;
 
     log::info!(
         "starting demo2d: {}x{} window, {} Hz fixed updates",
@@ -67,6 +62,6 @@ fn run() -> Result<(), RunError> {
         config.window_height,
         config.fixed_timestep_hz
     );
-    mikan_platform::run(config, Demo::new(cli))?;
+    mikan::run(config, Demo::new(cli))?;
     Ok(())
 }

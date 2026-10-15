@@ -426,9 +426,7 @@ name = "demo2d"
 version = "0.1.0"
 dependencies = [
  "log",
- "mikan-core",
- "mikan-platform",
- "mikan-render",
+ "mikan",
  "thiserror 2.0.21",
 ]
 

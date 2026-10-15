@@ -1,21 +1,18 @@
 //! The demo application: a square you can drive around with the keyboard.
 //!
-//! Everything gameplay-facing lives here. The demo implements
-//! [`mikan_platform::App`], so it is driven by the engine's real runtime: fixed
-//! updates timed by `mikan-core`, window and input handling from
-//! `mikan-platform`, and rendering through `mikan-render`.
+//! Everything gameplay-facing lives here. The demo implements [`Game`], so it
+//! is driven by the engine's real runtime through the facade: the facade owns
+//! the renderer and forwards resizes, `mikan-platform` owns the window, input,
+//! and timing, and `mikan-render` draws.
 //!
 //! Textures come from a procedural atlas (see [`crate::atlas`]); nothing is
 //! loaded from disk yet.
 
-use std::sync::Arc;
 use std::time::Duration;
 
-use mikan_core::{Camera2d, FrameOutcome};
-use mikan_platform::{App, AppContext, KeyCode, PhysicalKey, PhysicalSize, PlatformError};
-use mikan_render::{
-    CaptureBuffer, Frame, RenderSettings, RenderWindow, Renderer, Sprite, Texture,
-    TextureDescriptor,
+use mikan::{
+    AppContext, Camera2d, CaptureBuffer, Engine, Frame, FrameOutcome, Game, KeyCode, PhysicalKey,
+    RenderError, Sprite, Texture, TextureDescriptor,
 };
 use thiserror::Error;
 
@@ -38,7 +35,7 @@ const MARKER_MARGIN: f32 = 24.0;
 pub enum DemoError {
     /// Rendering failed.
     #[error(transparent)]
-    Render(#[from] mikan_render::RenderError),
+    Render(#[from] RenderError),
 
     /// Writing a captured frame failed.
     #[error(transparent)]
@@ -66,12 +63,10 @@ pub enum DemoError {
 /// Demo application state.
 pub struct Demo {
     cli: Cli,
-    renderer: Option<Renderer>,
     /// Atlas texture uploaded at startup, kept alive for the sprites that
     /// borrow it.
     atlas: Option<Texture>,
     square: Square,
-    viewport: [f32; 2],
     presented: u64,
     capture: Option<CaptureBuffer>,
     captured: bool,
@@ -87,10 +82,8 @@ impl Demo {
         Self {
             capture: cli.capture.as_ref().map(|_| CaptureBuffer::new()),
             cli,
-            renderer: None,
             atlas: None,
             square: Square::new([0.0, 0.0], SQUARE_SIZE, SQUARE_SPEED),
-            viewport: [0.0, 0.0],
             presented: 0,
             captured: false,
             capture_finalized: false,
@@ -114,14 +107,14 @@ impl Demo {
     /// Sprites for this frame: the player square and a static corner marker,
     /// both sampling their tile of the atlas.
     ///
-    /// The returned sprites borrow `atlas`, which is why it is a parameter
-    /// rather than read from `self`: the render call borrows `self` mutably.
-    fn sprites<'t>(&self, atlas: &'t Texture, alpha: f32) -> [Sprite<'t>; 2] {
+    /// The returned sprites borrow `atlas`, which is a parameter rather than a
+    /// field read so the borrow stays visible at the call site.
+    fn sprites<'t>(&self, atlas: &'t Texture, viewport: [f32; 2], alpha: f32) -> [Sprite<'t>; 2] {
         let center = self.square.interpolated_position(alpha);
         let size = self.square.size();
         let marker_center = [
             MARKER_MARGIN + MARKER_SIZE * 0.5,
-            (self.viewport[1] - MARKER_MARGIN - MARKER_SIZE * 0.5).max(MARKER_SIZE * 0.5),
+            (viewport[1] - MARKER_MARGIN - MARKER_SIZE * 0.5).max(MARKER_SIZE * 0.5),
         ];
         [
             Sprite::new(center, [size, size], atlas).with_uv(atlas::tile_uv(atlas::PLAYER_TILE)),
@@ -199,38 +192,29 @@ impl Demo {
     }
 }
 
-impl App for Demo {
-    fn init(&mut self, ctx: &mut AppContext<'_>) -> Result<(), PlatformError> {
-        let window: Arc<dyn RenderWindow> = ctx.window().clone();
-        let size = ctx.window().inner_size();
-        let renderer = Renderer::new(
-            window,
-            (size.width, size.height),
-            RenderSettings {
-                vsync: ctx.config().vsync,
-            },
-        )
-        .map_err(|error| PlatformError::app(DemoError::from(error)))?;
+impl Game for Demo {
+    type Error = DemoError;
 
-        if self.cli.capture.is_some() && !renderer.supports_capture() {
-            return Err(PlatformError::app(DemoError::CaptureUnsupported));
+    fn init(&mut self, engine: &mut Engine<'_, '_>) -> Result<(), DemoError> {
+        // Capture was requested on the command line; fail before the first
+        // frame if this surface cannot provide it.
+        if self.cli.capture.is_some() && !engine.renderer().supports_capture() {
+            return Err(DemoError::CaptureUnsupported);
         }
 
         let atlas_data = atlas::build();
-        let atlas = renderer
-            .create_texture(TextureDescriptor::new(
-                atlas_data.width,
-                atlas_data.height,
-                &atlas_data.pixels,
-            ))
-            .map_err(|error| PlatformError::app(DemoError::from(error)))?;
+        let atlas = engine.renderer().create_texture(TextureDescriptor::new(
+            atlas_data.width,
+            atlas_data.height,
+            &atlas_data.pixels,
+        ))?;
 
-        let info = renderer.adapter_info();
+        let info = engine.renderer().adapter_info();
         log::info!(
             "rendering with {} ({:?}), swap chain format {:?}",
             info.name,
             info.backend,
-            renderer.surface_format()
+            engine.renderer().surface_format()
         );
         log::info!(
             "textures: procedural atlas {}x{}, {} tiles of {}px",
@@ -241,77 +225,65 @@ impl App for Demo {
         );
         log::info!("controls: WASD or arrow keys to move, Escape to quit");
 
-        self.viewport = [size.width as f32, size.height as f32];
+        let (width, height) = engine.renderer().size();
         self.square = Square::new(
-            [self.viewport[0] * 0.5, self.viewport[1] * 0.5],
+            [width as f32 * 0.5, height as f32 * 0.5],
             SQUARE_SIZE,
             SQUARE_SPEED,
         );
         self.atlas = Some(atlas);
-        self.renderer = Some(renderer);
         Ok(())
     }
 
-    fn resize(&mut self, ctx: &mut AppContext<'_>, size: PhysicalSize<u32>) {
-        self.viewport = [size.width as f32, size.height as f32];
-        if let Some(renderer) = &mut self.renderer {
-            renderer.resize(size.width, size.height);
-        }
-        let _ = ctx;
-    }
-
-    fn update(&mut self, ctx: &mut AppContext<'_>, dt: Duration) -> Result<(), PlatformError> {
-        if ctx
+    fn update(&mut self, engine: &mut Engine<'_, '_>, dt: Duration) -> Result<(), DemoError> {
+        if engine
+            .ctx()
             .input()
             .is_key_just_pressed(PhysicalKey::Code(KeyCode::Escape))
         {
             log::info!("escape pressed; quitting");
-            ctx.request_exit();
+            engine.ctx().request_exit();
             return Ok(());
         }
 
-        let direction = Self::direction(ctx);
-        let viewport = [self.viewport[0].max(1.0), self.viewport[1].max(1.0)];
-        self.square.fixed_update(direction, dt, viewport);
+        let direction = Self::direction(engine.ctx());
+        let (width, height) = engine.renderer().size();
+        self.square
+            .fixed_update(direction, dt, [width.max(1) as f32, height.max(1) as f32]);
         Ok(())
     }
 
-    fn render(&mut self, ctx: &mut AppContext<'_>) -> Result<FrameOutcome, PlatformError> {
+    fn render(&mut self, engine: &mut Engine<'_, '_>) -> Result<FrameOutcome, DemoError> {
         if let Some(timeout) = self.cli.timeout
             && let Some(target) = self.cli.frames
             && self.presented < target
-            && ctx.time().elapsed() > timeout
+            && engine.ctx().time().elapsed() > timeout
         {
-            return Err(PlatformError::app(DemoError::FrameTimeout {
+            return Err(DemoError::FrameTimeout {
                 presented: self.presented,
                 requested: target,
                 timeout_secs: timeout.as_secs(),
-            }));
+            });
         }
 
-        let alpha = ctx.alpha();
-        let clear_color = ctx.config().clear_color;
+        let alpha = engine.ctx().alpha();
+        let clear_color = engine.ctx().config().clear_color;
+        let (width, height) = engine.renderer().size();
 
-        // Sprites borrow the atlas, so they are built before the renderer is
-        // borrowed mutably; the borrows are disjoint fields of `self`.
+        // Sprites borrow the atlas; the borrow ends after the render call,
+        // which is when the capture buffer is borrowed mutably.
         let Some(atlas) = self.atlas.as_ref() else {
             return Ok(FrameOutcome::Idle);
         };
-        let sprites = self.sprites(atlas, alpha);
+        let sprites = self.sprites(atlas, [width as f32, height as f32], alpha);
         let camera = self.camera(alpha);
         let mut frame = Frame::new(clear_color).with_sprites(&sprites);
         if let Some(camera) = camera {
             frame = frame.with_camera(camera);
         }
 
-        let Some(renderer) = self.renderer.as_mut() else {
-            return Ok(FrameOutcome::Idle);
-        };
-
         let capturing = self.capture.is_some();
-        let outcome = renderer
-            .render_frame(&frame, self.capture.as_mut())
-            .map_err(|error| PlatformError::app(DemoError::from(error)))?;
+        let outcome = engine.render_frame(&frame, self.capture.as_mut())?;
         if capturing {
             self.captured = true;
         }
@@ -320,7 +292,7 @@ impl App for Demo {
             FrameOutcome::Presented => {
                 self.presented += 1;
                 if self.cli.stats {
-                    self.frame_times.push(ctx.time().delta());
+                    self.frame_times.push(engine.ctx().time().delta());
                 }
             }
             FrameOutcome::Skipped => {}
@@ -336,14 +308,14 @@ impl App for Demo {
             && self.presented >= target
         {
             log::info!("presented {target} frames; exiting");
-            self.write_capture().map_err(PlatformError::app)?;
-            ctx.request_exit();
+            self.write_capture()?;
+            engine.ctx().request_exit();
         }
 
         Ok(outcome)
     }
 
-    fn shutdown(&mut self, ctx: &mut AppContext<'_>) {
+    fn shutdown(&mut self, engine: &mut Engine<'_, '_>) {
         // The interactive path has no frame budget, so the capture is written
         // here; failures can only be logged because shutdown cannot fail.
         if let Err(error) = self.write_capture() {
@@ -358,7 +330,7 @@ impl App for Demo {
         log::info!(
             "demo finished: presented {} of {} frames; square at [{:.0}, {:.0}]",
             self.presented,
-            ctx.time().frame_count(),
+            engine.ctx().time().frame_count(),
             position[0],
             position[1]
         );

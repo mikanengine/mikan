@@ -16,8 +16,6 @@ name = "demo2d"
 path = "src/main.rs"
 
 [dependencies]
-mikan-core.workspace = true
-mikan-platform.workspace = true
-mikan-render.workspace = true
+mikan.workspace = true
 log.workspace = true
 thiserror.workspace = true
