@@ -457,9 +457,6 @@ fn surface_configuration(
         // Enables frame capture for tests and tooling.
         usage |= wgpu::TextureUsages::COPY_SRC;
     }
-    if !caps.alpha_modes.contains(&wgpu::CompositeAlphaMode::Auto) {
-        log::warn!("surface does not support the automatic alpha mode");
-    }
     Some(wgpu::SurfaceConfiguration {
         usage,
         format,
@@ -468,9 +465,30 @@ fn surface_configuration(
         height: size.1,
         present_mode: present_mode(settings.vsync),
         desired_maximum_frame_latency: 2,
-        alpha_mode: wgpu::CompositeAlphaMode::Auto,
+        alpha_mode: choose_alpha_mode(&caps.alpha_modes),
         view_formats: Vec::new(),
     })
+}
+
+/// Picks a composite alpha mode the surface actually supports.
+///
+/// `Auto` is preferred because it lets the backend decide how the swap chain
+/// composites onto the desktop; `Opaque` is the portable fallback. Configuring
+/// a mode the surface did not advertise is a validation error, so the choice is
+/// restricted to the reported list.
+fn choose_alpha_mode(modes: &[wgpu::CompositeAlphaMode]) -> wgpu::CompositeAlphaMode {
+    for preferred in [
+        wgpu::CompositeAlphaMode::Auto,
+        wgpu::CompositeAlphaMode::Opaque,
+    ] {
+        if modes.contains(&preferred) {
+            return preferred;
+        }
+    }
+    modes
+        .first()
+        .copied()
+        .unwrap_or(wgpu::CompositeAlphaMode::Auto)
 }
 
 /// Picks the presentation format: the first sRGB format if the surface offers
@@ -533,6 +551,22 @@ mod tests {
     fn vsync_selects_the_matching_automatic_present_mode() {
         assert_eq!(present_mode(true), wgpu::PresentMode::AutoVsync);
         assert_eq!(present_mode(false), wgpu::PresentMode::AutoNoVsync);
+    }
+
+    #[test]
+    fn alpha_mode_is_restricted_to_supported_modes() {
+        use wgpu::CompositeAlphaMode::{Auto, Inherit, Opaque, PreMultiplied};
+        assert_eq!(choose_alpha_mode(&[Auto, Opaque]), Auto);
+        assert_eq!(
+            choose_alpha_mode(&[PreMultiplied, Opaque]),
+            Opaque,
+            "fall back to the portable opaque mode when Auto is unavailable"
+        );
+        assert_eq!(
+            choose_alpha_mode(&[PreMultiplied, Inherit]),
+            PreMultiplied,
+            "otherwise take whatever the surface reports first"
+        );
     }
 
     #[test]
