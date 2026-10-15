@@ -69,7 +69,8 @@ pub struct Demo {
     viewport: [f32; 2],
     presented: u64,
     capture: Option<CaptureBuffer>,
-    capture_written: bool,
+    captured: bool,
+    capture_finalized: bool,
     frame_times: Vec<Duration>,
     idle_warned: bool,
 }
@@ -85,7 +86,8 @@ impl Demo {
             square: Square::new([0.0, 0.0], SQUARE_SIZE, SQUARE_SPEED),
             viewport: [0.0, 0.0],
             presented: 0,
-            capture_written: false,
+            captured: false,
+            capture_finalized: false,
             frame_times: Vec::new(),
             idle_warned: false,
         }
@@ -118,19 +120,26 @@ impl Demo {
     }
 
     /// Writes the most recent captured frame, if one was requested.
+    ///
+    /// The attempt is marked as finalized even when it fails, so a failed write
+    /// is reported once (by the caller that could fail) instead of being retried
+    /// during shutdown.
     fn write_capture(&mut self) -> Result<(), DemoError> {
-        if self.capture_written {
+        if self.capture_finalized {
             return Ok(());
         }
         let (Some(path), Some(buffer)) = (self.cli.capture.clone(), self.capture.as_ref()) else {
             return Ok(());
         };
-        if buffer.is_empty() {
+        // Only write a frame that was actually captured: the buffer is resized
+        // before the readback completes, so an aborted frame would otherwise be
+        // written as a black image.
+        if !self.captured {
             log::warn!("no frame has been captured yet; nothing written to {path:?}");
             return Ok(());
         }
+        self.capture_finalized = true;
         ppm::write_ppm(&path, buffer.width(), buffer.height(), buffer.pixels())?;
-        self.capture_written = true;
         log::info!(
             "wrote {}x{} frame to {}",
             buffer.width(),
@@ -248,9 +257,13 @@ impl App for Demo {
         };
 
         let frame = Frame::new(clear_color).with_quads(&quads);
+        let capturing = self.capture.is_some();
         let outcome = renderer
             .render_frame(&frame, self.capture.as_mut())
             .map_err(|error| PlatformError::app(DemoError::from(error)))?;
+        if capturing {
+            self.captured = true;
+        }
 
         match outcome {
             FrameOutcome::Presented => {
