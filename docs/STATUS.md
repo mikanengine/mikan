@@ -105,25 +105,28 @@ display performance and must not be quoted as such.
 ## Verification: CI
 
 Every commit on `main` has a green CI run. Latest:
-[38747734131](https://github.com/neverseeyouagainnnnn/mikan/actions/runs/38747734131)
-for commit `1de2e22` — the sprites, textures, and camera milestone:
+[38753924627](https://github.com/neverseeyouagainnnnn/mikan/actions/runs/38753924627)
+for commit `92398f3` — the engine-facade milestone:
 
 | Job | Result | Duration |
 | --- | --- | --- |
-| Quality (Ubuntu): fmt, check, tests, clippy, release build | success | 1m25s |
-| Headless smoke test (Xvfb + lavapipe): smoke, input, camera, artifacts | success | 2m57s |
-| Compile check (macos-latest) | success | 30s |
-| Compile check (windows-latest) | success | 1m49s |
+| Quality (Ubuntu): fmt, check, tests, clippy, release build | success | 1m39s |
+| Headless smoke test (Xvfb + lavapipe): smoke, input, camera, artifacts | success | 2m22s |
+| Compile check (macos-latest) | success | 24s |
+| Compile check (windows-latest) | success | 2m3s |
 
-[Run 38734036511](https://github.com/neverseeyouagainnnnn/mikan/actions/runs/38734036511)
-covers `53afe21` (input verification end to end) and
+The smoke job includes the "Verify the 2D camera end to end" step, so the
+facade's renderer creation, resize forwarding, and error translation are
+runtime-verified in CI by the same expected pixels as the previous milestone,
+now produced by the demo running on `mikan`.
+
+Earlier runs in this milestone family:
+[38747734131](https://github.com/neverseeyouagainnnnn/mikan/actions/runs/38747734131)
+covers `1de2e22` (sprites, textures, and camera),
+[38734036511](https://github.com/neverseeyouagainnnnn/mikan/actions/runs/38734036511)
+covers `53afe21` (input verification end to end), and
 [38731320882](https://github.com/neverseeyouagainnnnn/mikan/actions/runs/38731320882)
-covers `9eaaed8`; both are green, so the milestone is runtime-verified in CI and
-not only locally.
-
-The engine-facade milestone (`5ffe1c7`, `431d894`, and the documentation commit)
-was verified locally with `./scripts/verify.sh` and has not run in CI yet; the
-next push exercises it.
+covers `9eaaed8`.
 
 Known CI annotations (non-failing): GitHub reports that `actions/checkout@v4`,
 `actions/cache@v4`, and `actions/upload-artifact@v4` target Node.js 20, which is
@@ -187,8 +190,8 @@ comes from one local `./scripts/verify.sh` run at `431d894`; the expected
 capture values are byte-identical to the previous milestone, which is the
 regression argument for a pure composition change. Renderer-startup error
 labeling is unit-tested rather than runtime-forced, because the verification
-environment cannot make adapter selection fail on demand. This milestone has no
-CI record yet; the update lands in the commit after the first push.
+environment cannot make adapter selection fail on demand. All three commits ran
+through CI in run 38753924627 (above).
 
 ## Next milestone
 
