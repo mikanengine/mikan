@@ -36,8 +36,11 @@ if command -v xvfb-run >/dev/null 2>&1; then
     if command -v xdotool >/dev/null 2>&1; then
         echo "==> input verification: synthetic key events under Xvfb"
         RUST_LOG="${RUST_LOG:-info}" xvfb-run -a bash scripts/verify_input.sh
+
+        echo "==> camera verification: follow camera and zoom under Xvfb"
+        RUST_LOG="${RUST_LOG:-info}" xvfb-run -a bash scripts/verify_camera.sh
     else
-        echo "==> skipping the input verification: xdotool is not installed"
+        echo "==> skipping the input and camera verification: xdotool is not installed"
     fi
 else
     echo "==> skipping the headless smoke test: xvfb-run is not installed"

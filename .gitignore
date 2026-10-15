@@ -7,6 +7,9 @@
 /artifacts/
 *.ppm
 
+# Python bytecode from the verification scripts
+__pycache__/
+
 # Editor and OS noise
 .DS_Store
 .idea/

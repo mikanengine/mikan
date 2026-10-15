@@ -83,11 +83,14 @@ jobs:
       - name: Verify keyboard input end to end
         run: xvfb-run -a bash scripts/verify_input.sh
 
-      - name: Upload the captured frame
+      - name: Verify the 2D camera end to end
+        run: xvfb-run -a bash scripts/verify_camera.sh
+
+      - name: Upload the captured frames
         uses: actions/upload-artifact@v4
         with:
-          name: demo2d-frame
-          path: artifacts/frame.ppm
+          name: demo2d-frames
+          path: artifacts/*.ppm
           if-no-files-found: error
 
   # Compile-only portability check. This proves the code builds for Windows and

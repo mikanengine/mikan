@@ -21,65 +21,11 @@ cd "$(dirname "$0")/.."
 DEMO_BIN="${DEMO_BIN:-./target/release/demo2d}"
 FRAME_BUDGET="${FRAME_BUDGET:-3000}"
 TIMEOUT_SECS="${TIMEOUT_SECS:-60}"
-RUN_LOG="$(mktemp)"
-WINDOW_ID=""
 
-for tool in xdotool python3; do
-    command -v "$tool" >/dev/null 2>&1 || {
-        echo "error: $tool is required but not installed" >&2
-        exit 2
-    }
-done
-[ -n "${DISPLAY:-}" ] || {
-    echo "error: no DISPLAY; run under xvfb-run -a or on a desktop session" >&2
-    exit 2
-}
-[ -x "$DEMO_BIN" ] || {
-    echo "error: $DEMO_BIN not found; run cargo build --release -p demo2d" >&2
-    exit 2
-}
-
-cleanup() {
-    [ -n "$WINDOW_ID" ] || return 0
-    pkill -f "$DEMO_BIN" >/dev/null 2>&1 || true
-}
-trap cleanup EXIT
-
-find_window() {
-    for _ in $(seq 1 100); do
-        WINDOW_ID="$(xdotool search --name 'Mikan' 2>/dev/null | tail -1 || true)"
-        if [ -n "$WINDOW_ID" ]; then
-            return 0
-        fi
-        sleep 0.1
-    done
-    echo "error: the demo window did not appear" >&2
-    return 1
-}
-
-# Focus is only guaranteed once the window is mapped, and a key sent before that
-# goes nowhere. Set focus, then confirm the X server agrees before typing.
-focus_window() {
-    for _ in $(seq 1 50); do
-        xdotool windowfocus --sync "$WINDOW_ID" >/dev/null 2>&1 || true
-        if [ "$(xdotool getwindowfocus 2>/dev/null || true)" = "$WINDOW_ID" ]; then
-            return 0
-        fi
-        sleep 0.1
-    done
-    echo "error: could not focus the demo window" >&2
-    return 1
-}
-
-start_demo() {
-    : >"$RUN_LOG"
-    "$DEMO_BIN" --frames "$1" --timeout "$TIMEOUT_SECS" >>"$RUN_LOG" 2>&1 &
-    DEMO_PID=$!
-    find_window
-    sleep 0.3
-    focus_window
-    sleep 0.2
-}
+# shellcheck source=scripts/lib.sh
+source scripts/lib.sh
+check_environment
+trap cleanup_demo EXIT
 
 # --- 1. movement ----------------------------------------------------------
 
