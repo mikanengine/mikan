@@ -167,7 +167,7 @@ tick():                    Time::tick() -> clamped delta (max_frame_delta)
 schedule:                  FixedTimestep::advance(delta) -> steps (<= max_steps_per_frame)
 for each step:             App::update(ctx, fixed_dt)
 once:                      App::render(ctx) -> FrameOutcome
-once:                      InputState::end_frame()  (clear edge state)
+if steps > 0:              InputState::end_frame()  (consume input edges)
 continue?                  Presented/Skipped -> request another redraw
                            Idle             -> ControlFlow::Wait until events arrive
 ```
@@ -175,6 +175,11 @@ continue?                  Presented/Skipped -> request another redraw
 Properties this gives us:
 
 - **Simulation is deterministic in time.** Gameplay sees a constant `dt`.
+- **Input is never dropped.** Press and release edges are consumed only by a
+  frame that ran at least one fixed update, so a tap that lands between two
+  simulation steps is observed by the next one. (With rendering at 600 fps and a
+  120 Hz simulation, most frames run zero steps, so this is the common case, not
+  an edge case.)
 - **Presentation is decoupled.** Rendering happens once per frame and may
   interpolate with `ctx.alpha()` between the previous and current simulation
   states, so a 60 Hz display and a 120 Hz simulation still look smooth.

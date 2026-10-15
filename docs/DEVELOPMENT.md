@@ -15,14 +15,22 @@ How to build, test, run, and verify Mikan on your machine.
 
 ### Linux
 
-Windowing goes through `winit`, which needs the usual X11/Wayland development
-libraries. On Debian and Ubuntu:
+Windowing goes through `winit`, which loads the X11 and Wayland client
+libraries **at runtime** rather than linking them. The runtime packages are what
+matter; development headers are not required to build Mikan. On Debian and
+Ubuntu:
 
 ```bash
 sudo apt-get install -y \
-  libxkbcommon-dev libxkbcommon-x11-0 \
-  libx11-dev libx11-xcb1 libxcursor-dev libxi-dev \
-  libwayland-dev
+  libx11-6 libx11-xcb1 libxcursor1 libxi6 libxrandr2 \
+  libxkbcommon0 libxkbcommon-x11-0
+```
+
+If any of these are missing, the window cannot be created and the process exits
+with:
+
+```
+event loop failure: ... Failed to load one of xlib's shared libraries
 ```
 
 For headless machines (CI, containers, remote shells without a display):
@@ -32,7 +40,8 @@ sudo apt-get install -y xvfb mesa-vulkan-drivers
 ```
 
 `mesa-vulkan-drivers` provides `lavapipe`, a software Vulkan implementation, so
-rendering can be exercised without a GPU.
+rendering can be exercised without a GPU. Together with the list above, this is
+exactly what the CI smoke test installs.
 
 ### Windows and macOS
 
@@ -62,6 +71,15 @@ cargo test --workspace                          # unit and doc tests
 cargo clippy --workspace --all-targets -- -D warnings   # lints as errors
 cargo build --workspace --release               # release build
 ```
+
+Or run all of them, plus the headless runtime checks, with one command:
+
+```bash
+./scripts/verify.sh
+```
+
+The script also runs the smoke test and capture verification below when
+`xvfb-run` is available, and skips them with a notice when it is not.
 
 Logging is controlled with the standard `RUST_LOG` environment variable:
 
@@ -128,6 +146,26 @@ dark clear color. The exact values depend on the swap chain format (sRGB
 encodes linear colors to the display space), so treat this as a qualitative
 check: the three channels of the center pixel must differ from the background.
 
+### Verifying keyboard input
+
+The smoke test never presses a key, so input is verified separately by injecting
+real X11 key events with `xdotool`:
+
+```bash
+xvfb-run -a bash scripts/verify_input.sh
+```
+
+The script holds `D` for one second and checks that the square ended up where
+the configured speed says it should, then taps `Escape` and checks that the
+process exits cleanly with status 0 instead of running into the frame-budget
+timeout. It requires `xdotool`, `python3`, and a display.
+
+This check exists because it found a real bug: with rendering at roughly
+600 frames per second and a 120 Hz simulation, most frames run zero fixed
+updates, and input press edges were being discarded at the end of those frames.
+A tapped Escape key was therefore lost. The runner now consumes input edges only
+on frames that ran an update.
+
 ### Frame-time statistics
 
 `--stats` prints mean, p50, p95, and max frame times and the implied average
@@ -165,6 +203,7 @@ number produced on a different machine as if it applied to this one.
 | --- | --- |
 | `error: failed to run custom build command for wgpu-core` | Missing X11/Wayland or Vulkan development packages. Install the packages listed above. |
 | `no graphics adapter is available for this window` | No working graphics backend. Install a driver, or `mesa-vulkan-drivers` plus `xvfb-run` for headless use. |
+| `Failed to load one of xlib's shared libraries` | Missing X11 runtime libraries. Install the packages listed under Linux prerequisites. |
 | `this surface does not support frame capture; omit --capture` | The swap chain cannot be copied from on this backend/format. Drop `--capture`; it does not affect normal rendering. |
 | Window opens but nothing moves | The window does not have focus, or the event loop is occluded. Click the window; check `RUST_LOG=debug` output. |
 | `thread 'main' panicked at ... winit` on Linux | Running without a display. Use `xvfb-run -a` or run on a desktop session. |
