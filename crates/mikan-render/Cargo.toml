@@ -1,6 +1,6 @@
 [package]
 name = "mikan-render"
-description = "wgpu-based rendering for Mikan: surface management, frame presentation, and flat 2D quads."
+description = "wgpu-based rendering for Mikan: surface management, frame presentation, sprites, textures, and a minimal 2D camera."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

@@ -1,9 +1,9 @@
 # Mikan status
 
 - **Date:** 2026-10-15
-- **Revision:** `main` @ `1de2e22` ("docs: document the sprites and camera
-  milestone"), pushed to `origin/main`; the refresh of this status text is the
-  commit that contains this line. The milestone commits are listed under
+- **Revision:** `main` @ `431d894` ("demo2d: run through the engine facade"),
+  pushed to `origin/main`; the refresh of this status text is the commit that
+  contains this line. The milestone commits are listed under
   [Milestone changes](#milestone-changes-committed-to-main).
 - **Purpose:** state precisely what is implemented, how each claim was verified,
   and what is known to be missing. Verification levels follow ADR 0005: nothing
@@ -32,6 +32,23 @@ exactly. The demo generates a two-tile atlas in code, adds `--camera <none|follo
 and `--zoom <factor>`, and the milestone contains **no C or C++** — ADR 0006
 records why the native-module criteria (ADR 0004, `docs/ffi.md`) are unmet.
 
+## Milestone: the engine facade crate `mikan` — complete
+
+Applications no longer wire the platform and render layers together by hand.
+`crates/mikan` provides the `Game` trait (the `App` lifecycle hook for hook), an
+`Engine` handle carrying the platform context plus the renderer, and
+`mikan::run`, which creates the renderer from the window and configured vsync
+before `Game::init`, forwards every resize to the renderer before the game sees
+it, and delivers `shutdown` if and only if `init` ran — including when `init`
+returned an error. Engine and application failures share one channel:
+`Game::Error` must convert from `RenderError` (so `?` composes), and renderer
+startup failures are labeled "could not initialize the renderer" because they
+cannot travel through the game's error type. `Engine` hands out `&Renderer` for
+queries and texture creation and a `render_frame` call for submission, so
+`&mut Renderer` never escapes the facade. `demo2d` is now a client that depends
+on the single `mikan` crate, and the milestone contains **no C or C++** — ADR
+0007 records why the ADR 0004 criteria remain unmet.
+
 ## What is implemented
 
 | Area | What exists | Coverage |
@@ -39,7 +56,8 @@ records why the native-module criteria (ADR 0004, `docs/ffi.md`) are unmet.
 | `mikan-core` | `EngineConfig` + validation (`ConfigError`), `Color`, `Time` with delta clamping and a zero first tick, `FixedTimestep` with bounded catch-up and interpolation alpha, `FrameOutcome`, `Camera2d` (position, zoom, `world_to_screen`, sanitizing `effective_zoom`, `pixel_space`), one-shot `init_logging` | 22 unit tests |
 | `mikan-platform` | `App` lifecycle trait, `AppContext`, `InputState` (held state, press/release edges, cursor delta, focus release), `winit` runner with occlusion/suspension-aware waiting and input-edge consumption | 9 unit tests, 1 doc test |
 | `mikan-render` | `wgpu` instance/adapter/device/queue/surface, format/alpha/present-mode selection, explicit handling of every swap chain state, resize (including zero-sized), device-lost reporting, validated linear RGBA8 texture upload, instanced sprite pipeline (flat or textured, UV rectangles, per-run batching), camera view/projection matrix, RGBA8 capture readback | 26 unit tests, 1 doc test |
-| `games/demo2d` | CLI (`--frames`, `--capture`, `--stats`, `--timeout`, `--camera`, `--zoom`, `--help`), fixed-step square with interpolation, procedural two-tile atlas, corner marker, PPM writer, capture | 23 unit tests |
+| `mikan` | the `Game` lifecycle over the platform `App` (renderer created before `init`, resizes forwarded before the game sees them, `shutdown` iff `init` ran), the `Engine` handle (`AppContext` + `&Renderer` + `render_frame`), `Game::Error: From<RenderError>` translation, labeled renderer-startup failures, curated re-exports of all three layers | 3 unit tests, 2 doc tests |
+| `games/demo2d` | built on the `mikan` facade: CLI (`--frames`, `--capture`, `--stats`, `--timeout`, `--camera`, `--zoom`, `--help`), fixed-step square with interpolation, procedural two-tile atlas, corner marker, PPM writer, capture | 23 unit tests |
 
 ## Verification: build and tests (this revision, local)
 
@@ -47,7 +65,7 @@ records why the native-module criteria (ADR 0004, `docs/ffi.md`) are unmet.
 | --- | --- |
 | `cargo fmt --all -- --check` | pass |
 | `cargo check --workspace --all-targets` | pass |
-| `cargo test --workspace` | **82 pass, 0 fail** — 23 demo2d, 22 core, 9 platform, 26 render, 2 doc tests |
+| `cargo test --workspace` | **87 pass, 0 fail** — 83 unit tests (23 demo2d, 3 mikan, 22 core, 9 platform, 26 render) and 4 doc tests (2 mikan, 1 platform, 1 render) |
 | `cargo clippy --workspace --all-targets -- -D warnings` | pass |
 | `cargo build --workspace --release` | pass |
 
@@ -64,7 +82,7 @@ format `Bgra8UnormSrgb`, present mode `AutoVsync`.
 | Frame presentation + capture | `xvfb-run -a ./target/release/demo2d --frames 120 --capture artifacts/frame.ppm --stats` | 120 of 120 frames presented, exit 0, 960x600 PPM written |
 | Captured image contents | `python3 scripts/verify_capture.py artifacts/frame.ppm` | verified; background `(63, 69, 80)`, square center `(253, 195, 108)` |
 | Texture sampling | pixel probe of the same capture | square border `(179, 129, 64)` differs from its fill, marker tile center `(159, 224, 249)` and border `(90, 149, 188)` are the other tile: both atlas tiles are sampled, not flat colors |
-| Keyboard movement | `xvfb-run -a bash scripts/verify_input.sh` | holding `D` for 1 s moved the square from x=480 to x=912 (420 px/s, the right wall clamp); y unchanged |
+| Keyboard movement | `xvfb-run -a bash scripts/verify_input.sh` | holding `D` for 1 s moved the square from x=480 to x=910 (420 px/s; the camera run below observes it at the 912 wall clamp); y unchanged |
 | Escape quits | as above | a short tap of `Escape` exited with status 0, without reaching the frame-budget timeout |
 | Follow camera | `xvfb-run -a bash scripts/verify_camera.sh` | after the same 1 s hold the square's **world** position was x=912, while the capture shows it 95x96 px at `[432..526, 252..347]`, centroid `(480.2, 300.7)` — centred, so the view scrolled with it |
 | Zoom | as above (`--camera follow --zoom 2`) | the square renders 191x192 px centred (`[384..574, 204..395]`, centroid `(481.5, 302.0)`) — twice the 96 px of the unzoomed path |
@@ -79,9 +97,10 @@ converted to sRGB by the swap chain format, which confirms the clear color,
 texture upload and sampling, and the readback path agree.
 
 Frame times over those 120 frames (one run; they vary between runs): mean
-2.03 ms, p50 1.70 ms, p95 3.35 ms, max 12.50 ms. These describe a **software
-rasterizer under a virtual display** with no real vsync; they are not
-representative of GPU or display performance and must not be quoted as such.
+3.83 ms, p50 2.11 ms, p95 3.92 ms, max 186.20 ms (the maximum is a first-frame
+outlier caused by process startup). These describe a **software rasterizer under
+a virtual display** with no real vsync; they are not representative of GPU or
+display performance and must not be quoted as such.
 
 ## Verification: CI
 
@@ -101,6 +120,10 @@ covers `53afe21` (input verification end to end) and
 [38731320882](https://github.com/neverseeyouagainnnnn/mikan/actions/runs/38731320882)
 covers `9eaaed8`; both are green, so the milestone is runtime-verified in CI and
 not only locally.
+
+The engine-facade milestone (`5ffe1c7`, `431d894`, and the documentation commit)
+was verified locally with `./scripts/verify.sh` and has not run in CI yet; the
+next push exercises it.
 
 Known CI annotations (non-failing): GitHub reports that `actions/checkout@v4`,
 `actions/cache@v4`, and `actions/upload-artifact@v4` target Node.js 20, which is
@@ -126,6 +149,10 @@ green configuration stays pinned until the next push validates the change.
   reduce draw calls; one pipeline; no depth buffer, materials, or 3D.
 - **Camera scope:** position and zoom only — no rotation, bounds, smoothing, or
   parallax. Games implement those on top of `Camera2d`.
+- **Facade scope:** one window and one renderer per process; multi-window
+  applications must use `mikan_platform::App` directly. `Game::Error` must
+  convert from `RenderError`, and renderer startup failures reach the user as an
+  application error labeled "could not initialize the renderer".
 - **Engine scope:** no ECS, physics, audio, asset pipeline, or 3D. None of these
   are partially implemented or stubbed.
 - **Capture:** blocking readback, PPM output only, and restricted to RGBA8/BGRA8
@@ -141,41 +168,42 @@ green configuration stays pinned until the next push validates the change.
 
 ## Milestone changes (committed to `main`)
 
-Three commits on top of `53afe21`:
+Two code commits on top of `d190fce`, plus the documentation commit that
+contains this file:
 
-- `128ab33` — **render: replace the quad pipeline with textured sprites and a
-  camera**: `Camera2d` in `mikan-core`; `Sprite`, `UvRect`, the 48-byte
-  instance, `plan_batches` (consecutive same-texture runs), the
-  view/projection matrix, and the fallback-texture pipeline in `mikan-render`
-  (`quad.rs`/`quad.wgsl` removed); validated linear RGBA8 texture upload; the
-  demo's procedural atlas and `--camera`/`--zoom`.
-- `476cf13` — **verification: check the 2D camera end to end in scripts and CI**:
-  `scripts/lib.sh` (shared X11 helpers, PID-scoped cleanup), `scripts/ppm.py`
-  (shared PPM parser), `scripts/verify_camera.sh`/`.py` (follow and zoom
-  checks), and the camera-verification step in the CI smoke job.
-- `1de2e22` — **docs: document the sprites and camera milestone**: ADR 0006
-  (decisions and the no-native-module rationale) plus README, ARCHITECTURE,
-  DEVELOPMENT, STATUS, CONTRIBUTING, and CHANGELOG updates.
+- `5ffe1c7` — **mikan: add the engine facade crate**: the `Game` lifecycle
+  trait and `Engine` handle (`ctx`, `&Renderer`, `render_frame`),
+  `mikan::run` with renderer creation, resize forwarding, and labeled
+  renderer-startup failures, `Game::Error: From<RenderError>` translation, and
+  curated re-exports of the three layers.
+- `431d894` — **demo2d: run through the engine facade**: the demo implements
+  `Game` and loses its renderer field, resize hook, and error conversions
+  (58 insertions, 96 deletions); it depends on `mikan` alone.
+- The documentation commit that contains this file — ADR 0007 plus the README,
+  ARCHITECTURE, DEVELOPMENT, STATUS, and CHANGELOG refresh.
 
-All three ran through CI in run 38747734131 (above); the local
-`./scripts/verify.sh` runs before the push produced the evidence quoted in the
-runtime section.
+`cargo test --workspace` passes 87 tests, and the runtime evidence quoted above
+comes from one local `./scripts/verify.sh` run at `431d894`; the expected
+capture values are byte-identical to the previous milestone, which is the
+regression argument for a pure composition change. Renderer-startup error
+labeling is unit-tested rather than runtime-forced, because the verification
+environment cannot make adapter selection fail on demand. This milestone has no
+CI record yet; the update lands in the commit after the first push.
 
 ## Next milestone
 
 Ordered by intended value; each needs its own design note before implementation.
 
-1. **Engine facade crate (`mikan`)** — owns the platform/render composition that
-   `demo2d` currently performs by hand, so applications stop wiring layers.
-2. **ECS-lite** — entity storage and systems scheduled on the existing fixed
+1. **ECS-lite** — entity storage and systems scheduled on the existing fixed
    timestep.
-3. **2D collision** — broad phase plus AABB resolution against the same fixed
+2. **2D collision** — broad phase plus AABB resolution against the same fixed
    step.
-4. **Asset loading with hot reload** — once there is something to load; image
+3. **Asset loading with hot reload** — once there is something to load; image
    decoding plugs in front of `Renderer::create_texture`.
-5. **Platform verification** — runtime-verify Windows and macOS (and Wayland)
+4. **Platform verification** — runtime-verify Windows and macOS (and Wayland)
    per ADR 0005, and record a hardware-GPU measurement.
 
 Native C/C++ modules remain out of scope until a measured need meets every
-criterion in `docs/ffi.md` and ADR 0004; ADR 0006 repeats that finding for this
-milestone rather than leaving it implicit.
+criterion in `docs/ffi.md` and ADR 0004; ADR 0006 and ADR 0007 repeat that
+finding for the sprites/camera and facade milestones rather than leaving it
+implicit.

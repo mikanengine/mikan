@@ -22,6 +22,7 @@ swap-chain condition, and exits cleanly.
 | Clear color + sprites (flat or textured, one instanced draw call per texture run) | implemented, runtime-verified |
 | Textures uploaded from linear RGBA8 data, atlas UV rectangles | implemented, runtime-verified |
 | Minimal 2D camera (position + zoom, follow or pixel space) | implemented, runtime-verified |
+| Engine facade (`mikan`): one lifecycle for renderer creation, resize, errors | implemented, runtime-verified |
 | Offscreen frame capture (PPM) for tests and tooling | implemented, runtime-verified |
 | 3D, audio, physics, ECS, asset loading | **not implemented** — see the roadmap |
 
@@ -51,6 +52,7 @@ command reference, including headless smoke-test mode.
 ## Workspace layout
 
 ```
+crates/mikan            engine facade: the application lifecycle that composes platform and rendering
 crates/mikan-core       configuration, time, fixed timestep, logging, 2D camera, shared types
 crates/mikan-platform   window lifecycle, input state, application runner (winit)
 crates/mikan-render     device and swap chain management, sprites and textures, capture (wgpu)
@@ -61,21 +63,30 @@ docs/                   architecture, development guide, FFI policy, ADRs
 Dependency direction is one-way and enforced by the manifests:
 
 ```
-mikan-core  <-  mikan-platform
-     ^
-     +---------  mikan-render
-                    ^
-                    |
-                 demo2d
+                         mikan-core
+                         ^        ^
+                         |        |
+               mikan-platform   mikan-render
+                         ^        ^
+                          \      /
+                            mikan          (facade: Game, Engine, run)
+                              ^
+                              |
+                           demo2d          (depends only on mikan)
 ```
 
 `mikan-platform` and `mikan-render` are siblings: the renderer knows nothing
 about event handling, and the platform layer knows nothing about graphics APIs.
-They meet only in the application, through the window handle the platform
-provides. See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the reasoning.
+The facade composes them without either layer knowing about the other; they
+still meet directly in applications that wire the layers by hand. See
+[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the reasoning.
 
 ## Engine crates
 
+- **`mikan`** — the facade an application depends on: the `Game` lifecycle
+  trait, the `Engine` handle (platform context plus renderer), and `mikan::run`.
+  It creates the renderer, forwards resizes, translates errors, and re-exports
+  the layers' common types.
 - **`mikan-core`** — platform-independent fundamentals: `EngineConfig`, `Color`,
   `Time`, `FixedTimestep`, `FrameOutcome`, `Camera2d`, logging initialization.
 - **`mikan-platform`** — the app lifecycle (`App`/`AppContext`), input snapshot
@@ -98,17 +109,16 @@ provides. See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the reasoning.
 
 Next milestones, in order of intended value:
 
-1. An engine facade crate (`mikan`) that wires platform and rendering together
-   so applications stop doing it by hand.
-2. ECS-lite: entity storage and systems with explicit scheduling.
-3. 2D collision detection and resolution.
-4. Asset loading and hot reload.
-5. Runtime verification on Windows, macOS, and Wayland (ADR 0005).
+1. ECS-lite: entity storage and systems with explicit scheduling.
+2. 2D collision detection and resolution.
+3. Asset loading and hot reload.
+4. Runtime verification on Windows, macOS, and Wayland (ADR 0005).
 
 3D work, native C modules, and C++ integrations are deliberately out of scope
 until the 2D foundation is stable. Each of those needs a concrete justification
 before it is started; see [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md), ADR
-0004, and ADR 0006 (the sprites/camera milestone records why it is Rust-only).
+0004, and ADRs 0006 and 0007 (the sprites/camera and facade milestones record
+why they are Rust-only).
 
 ## Platform support
 

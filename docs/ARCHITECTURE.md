@@ -38,7 +38,8 @@ as not implemented.
 crates/mikan-core        no dependencies on windowing or graphics
 crates/mikan-platform    winit is its only OS dependency; no graphics
 crates/mikan-render      wgpu is its only graphics dependency; no event handling
-games/demo2d             application: composes platform + render, owns gameplay
+crates/mikan             facade: one lifecycle that composes the platform and render layers
+games/demo2d             application: implements the facade's Game trait, owns gameplay
 ```
 
 ### `mikan-core`
@@ -93,11 +94,30 @@ Everything between a window handle and a presented frame.
 - `CaptureBuffer` — optional single-frame readback (RGBA8) used by tests and
   tooling.
 
+### `mikan`
+
+The composition layer an application depends on. It contains no windowing or
+graphics code of its own; it owns the order in which the other two layers are
+created, driven, and torn down.
+
+- `Game` — the application lifecycle, mirroring `App` hook for hook (`init`,
+  `resize`, `update`, `render`, `shutdown`) with an associated error type
+  bounded by `From<RenderError>`.
+- `Engine` — the handle callbacks receive: `ctx()` exposes the `AppContext`,
+  `renderer()` returns `&Renderer` for queries and texture creation, and
+  `render_frame` is the only path that touches `&mut Renderer`.
+- `run` — creates the renderer before `Game::init`, forwards every resize to
+  the renderer before the game sees it, delivers `shutdown` if and only if
+  `init` ran, and translates game errors into `PlatformError`. The event loop
+  itself remains `mikan_platform::run`; the facade adds one adapter, not a
+  second runtime.
+
 ### `games/demo2d`
 
-The application. It owns gameplay state (`Square`), reads input from and writes
-outputs to the engine through the public APIs only, and contains the command-line
-interface, the procedural atlas, the PPM writer, and the frame-time statistics.
+The application. It implements the facade's `Game` trait, owns gameplay state
+(`Square`), and contains the command-line interface, the procedural atlas, the
+PPM writer, and the frame-time statistics. It depends on `mikan` only; the
+platform and render layers reach it through the facade's re-exports.
 
 ## 3. Dependency direction
 
@@ -116,7 +136,11 @@ interface, the procedural atlas, the PPM writer, and the frame-time statistics.
          +---------------+---------------+
                          |
                     +----+----+
-                    | demo2d  |
+                    |  mikan  |   (facade: Game, Engine, run)
+                    +----+----+
+                         |
+                    +----+----+
+                    | demo2d  |   (depends only on mikan)
                     +---------+
 ```
 
@@ -124,13 +148,15 @@ Rules that keep this acyclic and comprehensible:
 
 - `mikan-core` depends on nothing in the workspace.
 - `mikan-platform` and `mikan-render` never depend on each other.
-- Applications may depend on all three.
+- `mikan` may depend on all three; it re-exports them so applications need one
+  dependency. Applications that need custom wiring can still use
+  `mikan_platform::App` directly.
 - No crate depends on an application.
 
 The renderer's window requirement is expressed as the `RenderWindow` trait rather
 than a dependency on `mikan-platform`, which is why the two layers can stay
-siblings. The application provides the window handle from `AppContext` when it
-constructs the `Renderer`.
+siblings. The facade passes the window handle from `AppContext` to
+`Renderer::new`; an application that wires the layers by hand passes it itself.
 
 ## 4. Application lifecycle
 
@@ -164,6 +190,13 @@ Errors from `App::init`, `App::update`, and `App::render` are recorded, logged a
 `error`, and cause the event loop to exit and `run` to return `Err`. `main`
 prints the error and exits with a failure code. `App::shutdown` always runs
 exactly once, whether the exit was orderly or caused by an error.
+
+When an application uses the facade, `mikan::run` wraps the game in an adapter
+that implements `App` and delegates to `mikan_platform::run`; the flow above is
+unchanged. The adapter creates the renderer immediately before `Game::init`,
+forwards `resize` to the renderer before calling the game's hook, and delivers
+`Game::shutdown` if and only if `Game::init` was invoked — including when it
+returned an error.
 
 ## 5. Game loop responsibilities
 
@@ -265,7 +298,8 @@ memory — there is no image loader yet.
 | `mikan-core` | `ConfigError` | Validation at startup; no runtime panics for bad input |
 | `mikan-platform` | `PlatformError` (+ `PlatformError::app` for application errors) | Fatal errors stop the loop, run `shutdown`, and reach `main` |
 | `mikan-render` | `RenderError` | Recoverable swap-chain states are *not* errors; unrecoverable ones are |
-| `demo2d` | `DemoError` | Wrapped into `PlatformError` so one channel carries all failures |
+| `mikan` | `Game::Error` (bounded by `From<RenderError>`) | Renderer operations return `RenderError` so `?` composes; renderer startup failures are labeled and wrapped with `PlatformError::app` |
+| `demo2d` | `DemoError` | Converted by the facade into `PlatformError`; one channel carries all failures to `main` |
 
 Rules:
 
@@ -311,9 +345,9 @@ own tests and a safe wrapper, or it does not arrive.
 
 These are seams the current design leaves open. None of them are implemented.
 
-- **Engine facade.** A `mikan` crate can own the wiring that `demo2d` currently
-  does in `App::init`, so applications stop composing platform and rendering
-  manually.
+- **Multi-window applications.** The facade owns one window and one renderer per
+  process; an application that needs several windows composes the layers
+  directly through `mikan_platform::App`, which remains public for this reason.
 - **Sprite sorting / batching heuristics.** `plan_batches` currently merges
   only consecutive sprites sharing a texture; a sorter that groups across
   submission order (z layers, texture keys) is a local change once painter

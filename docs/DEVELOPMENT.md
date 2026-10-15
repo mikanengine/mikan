@@ -60,6 +60,11 @@ Demo controls: `WASD` or arrow keys move the square, `Escape` quits, and closing
 the window quits. The demo exits with a non-zero status and a readable message if
 initialization or rendering fails.
 
+The demo is an application of the `mikan` facade crate (`crates/mikan`): it
+implements `mikan::Game` and depends on no other engine crate. The facade
+creates the renderer, forwards resizes, and translates errors; see
+[`ARCHITECTURE.md`](ARCHITECTURE.md) §2 for the layer split.
+
 The demo renders a small procedural texture atlas (a player tile and a marker
 tile) and can render through a camera:
 
