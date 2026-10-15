@@ -9,7 +9,8 @@ use crate::Frame;
 use crate::RenderWindow;
 use crate::capture::{CaptureBuffer, align_to, decode_rows};
 use crate::error::RenderError;
-use crate::quad::QuadRenderer;
+use crate::sprite::SpriteRenderer;
+use crate::texture::{Texture, TextureDescriptor};
 
 /// Knobs for renderer initialization.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -30,8 +31,10 @@ impl Default for RenderSettings {
 
 /// Owns the graphics device and a presentable surface for one window.
 ///
-/// The renderer is deliberately the *only* owner of GPU resources. Dropping it
-/// releases the device, the surface, and every buffer the quad pipeline owns.
+/// The renderer is deliberately the *only* owner of GPU resources. It creates
+/// the [`Texture`]s that [`Sprite`](crate::Sprite)s sample, and dropping it
+/// releases the device, the surface, and every buffer and texture the sprite
+/// pipeline owns.
 pub struct Renderer {
     window: Arc<dyn RenderWindow>,
     instance: wgpu::Instance,
@@ -42,7 +45,7 @@ pub struct Renderer {
     device: wgpu::Device,
     queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
-    quads: QuadRenderer,
+    sprites: SpriteRenderer,
     size: (u32, u32),
     needs_reconfigure: bool,
     capture_supported: bool,
@@ -127,7 +130,7 @@ impl Renderer {
         );
 
         let capture_supported = config.usage.contains(wgpu::TextureUsages::COPY_SRC);
-        let quads = QuadRenderer::new(&device, &queue, config.format);
+        let sprites = SpriteRenderer::new(&device, &queue, config.format);
 
         let mut renderer = Self {
             window,
@@ -137,7 +140,7 @@ impl Renderer {
             device,
             queue,
             config,
-            quads,
+            sprites,
             size,
             needs_reconfigure: false,
             capture_supported,
@@ -169,6 +172,30 @@ impl Renderer {
     #[must_use]
     pub fn supports_capture(&self) -> bool {
         self.capture_supported
+    }
+
+    /// Uploads a texture that sprites can sample.
+    ///
+    /// Pixel data is linear RGBA8, `width * height * 4` bytes, row-major, top
+    /// row first; see [`TextureDescriptor`]. The texture must only be used
+    /// with this renderer: it carries a bind group built from this renderer's
+    /// pipeline layout.
+    ///
+    /// # Errors
+    ///
+    /// Fails if a dimension is zero, if a dimension exceeds the device limit,
+    /// or if the pixel data does not match the dimensions.
+    pub fn create_texture(
+        &self,
+        descriptor: TextureDescriptor<'_>,
+    ) -> Result<Texture, RenderError> {
+        log::debug!(
+            "creating texture: {}x{}",
+            descriptor.width,
+            descriptor.height
+        );
+        self.sprites
+            .create_texture(&self.device, &self.queue, &descriptor, "mikan texture")
     }
 
     /// Updates the drawable size and reconfigures the swap chain.
@@ -283,8 +310,14 @@ impl Renderer {
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
-            self.quads
-                .draw(&self.device, &self.queue, &mut pass, frame.quads);
+            self.sprites.draw(
+                &self.device,
+                &self.queue,
+                &mut pass,
+                frame.camera,
+                self.size,
+                frame.sprites,
+            );
         }
 
         // Capture must happen before presentation: afterwards the swap chain
@@ -416,8 +449,6 @@ impl Renderer {
             return;
         };
         surface.configure(&self.device, &self.config);
-        self.quads
-            .set_viewport(&self.queue, self.size.0 as f32, self.size.1 as f32);
         self.needs_reconfigure = false;
     }
 
@@ -444,7 +475,7 @@ struct PendingCapture<'a> {
 
 /// Builds a surface configuration from adapter capabilities.
 ///
-/// Prefers an sRGB format, because the clear color and quad colors are linear
+/// Prefers an sRGB format, because the clear color and sprite colors are linear
 /// values and the hardware should encode them for the display.
 fn surface_configuration(
     caps: &wgpu::SurfaceCapabilities,

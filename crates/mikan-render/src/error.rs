@@ -68,4 +68,37 @@ pub enum RenderError {
     /// [`CaptureBuffer`](crate::CaptureBuffer).
     #[error("the surface format {0:?} cannot be captured as RGBA8")]
     CaptureFormatUnsupported(wgpu::TextureFormat),
+
+    /// A texture was requested with a zero width or height.
+    #[error("texture dimensions must be non-zero, got {width}x{height}")]
+    TextureZeroSize {
+        /// Requested width.
+        width: u32,
+        /// Requested height.
+        height: u32,
+    },
+
+    /// A texture is larger than the graphics device supports.
+    #[error("texture {width}x{height} exceeds the device limit of {max} pixels per side")]
+    TextureTooLarge {
+        /// Requested width.
+        width: u32,
+        /// Requested height.
+        height: u32,
+        /// Largest supported edge length.
+        max: u32,
+    },
+
+    /// The pixel data does not match the requested texture dimensions.
+    #[error("expected {expected} bytes of linear RGBA8 data for {width}x{height}, got {actual}")]
+    TextureDataLength {
+        /// Width the data was checked against.
+        width: u32,
+        /// Height the data was checked against.
+        height: u32,
+        /// Required byte count (`width * height * 4`).
+        expected: u64,
+        /// Byte count provided.
+        actual: u64,
+    },
 }

@@ -1,8 +1,8 @@
 //! Command-line options for the demo.
 //!
 //! Hand-rolled rather than delegated to an argument-parsing crate: the demo has
-//! five options, and keeping the workspace dependency graph small is worth more
-//! than the convenience here.
+//! a handful of options, and keeping the workspace dependency graph small is
+//! worth more than the convenience here.
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -12,8 +12,31 @@ use thiserror::Error;
 /// Default abort timeout applied when `--frames` is used without `--timeout`.
 pub const DEFAULT_FRAME_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// Zoom used when `--zoom` is not given.
+pub const DEFAULT_ZOOM: f32 = 1.0;
+
+/// How the demo drives its 2D camera.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum CameraMode {
+    /// No camera: world coordinates are physical pixels (the default).
+    #[default]
+    None,
+    /// The camera centers on the player every frame.
+    Follow,
+}
+
+impl CameraMode {
+    fn parse(value: &str) -> Option<Self> {
+        match value {
+            "none" => Some(Self::None),
+            "follow" => Some(Self::Follow),
+            _ => None,
+        }
+    }
+}
+
 /// Options the demo understands.
-#[derive(Debug, Default, PartialEq, Eq)]
+#[derive(Debug, PartialEq)]
 pub struct Cli {
     /// Present this many frames and then exit cleanly.
     ///
@@ -28,6 +51,23 @@ pub struct Cli {
     ///
     /// Only meaningful together with `--frames`.
     pub timeout: Option<Duration>,
+    /// Camera to render through.
+    pub camera: CameraMode,
+    /// Camera zoom in physical pixels per world unit.
+    pub zoom: f32,
+}
+
+impl Default for Cli {
+    fn default() -> Self {
+        Self {
+            frames: None,
+            capture: None,
+            stats: false,
+            timeout: None,
+            camera: CameraMode::None,
+            zoom: DEFAULT_ZOOM,
+        }
+    }
 }
 
 /// Why the command line could not be understood.
@@ -53,6 +93,9 @@ pub enum CliError {
     /// An option was repeated.
     #[error("'{0}' was given more than once")]
     DuplicateArgument(String),
+    /// `--zoom` was given without a camera to apply it to.
+    #[error("'--zoom' requires '--camera' (for example: --camera follow --zoom 2)")]
+    ZoomWithoutCamera,
 }
 
 impl Cli {
@@ -68,6 +111,8 @@ impl Cli {
         I: IntoIterator<Item = String>,
     {
         let mut cli = Cli::default();
+        let mut camera: Option<CameraMode> = None;
+        let mut zoom: Option<f32> = None;
         let mut args = args.into_iter();
 
         while let Some(argument) = args.next() {
@@ -120,9 +165,50 @@ impl Cli {
                     })?;
                     cli.timeout = Some(Duration::from_secs(seconds));
                 }
+                "--camera" => {
+                    let value = args
+                        .next()
+                        .ok_or(CliError::MissingValue(argument.clone()))?;
+                    if camera.is_some() {
+                        return Err(CliError::DuplicateArgument(argument));
+                    }
+                    let mode = CameraMode::parse(&value).ok_or_else(|| CliError::InvalidValue {
+                        option: argument.clone(),
+                        value: value.clone(),
+                    })?;
+                    camera = Some(mode);
+                }
+                "--zoom" => {
+                    let value = args
+                        .next()
+                        .ok_or(CliError::MissingValue(argument.clone()))?;
+                    if zoom.is_some() {
+                        return Err(CliError::DuplicateArgument(argument));
+                    }
+                    let factor = value.parse::<f32>().map_err(|_| CliError::InvalidValue {
+                        option: argument.clone(),
+                        value: value.clone(),
+                    })?;
+                    // A zoom that is not a finite positive number cannot
+                    // produce a meaningful view; reject it at the command line
+                    // instead of rendering a broken frame.
+                    if !factor.is_finite() || factor <= 0.0 {
+                        return Err(CliError::InvalidValue {
+                            option: argument,
+                            value,
+                        });
+                    }
+                    zoom = Some(factor);
+                }
                 other => return Err(CliError::UnknownArgument(other.to_string())),
             }
         }
+
+        cli.camera = camera.unwrap_or_default();
+        if zoom.is_some() && cli.camera == CameraMode::None {
+            return Err(CliError::ZoomWithoutCamera);
+        }
+        cli.zoom = zoom.unwrap_or(DEFAULT_ZOOM);
 
         // A headless smoke test must not hang forever if the window never
         // presents the requested frames.
@@ -143,11 +229,13 @@ USAGE:
     demo2d [OPTIONS]
 
 OPTIONS:
-    --frames <N>       Present N frames, then exit cleanly (smoke tests)
-    --capture <PATH>   Write the last presented frame to PATH as a binary PPM
-    --stats            Print frame-time statistics on exit
-    --timeout <SECS>   Abort if N frames are not presented in time (default 30)
-    -h, --help         Print this help
+    --frames <N>        Present N frames, then exit cleanly (smoke tests)
+    --capture <PATH>    Write the last presented frame to PATH as a binary PPM
+    --stats             Print frame-time statistics on exit
+    --timeout <SECS>    Abort if N frames are not presented in time (default 30)
+    --camera <MODE>     Camera to render through: none (default) or follow
+    --zoom <FACTOR>     Pixels per world unit when a camera is active (default 1)
+    -h, --help          Print this help
 
 CONTROLS:
     WASD or arrow keys   Move the square
@@ -170,6 +258,8 @@ mod tests {
         let cli = parse(&[]).expect("empty arguments are valid");
         assert_eq!(cli, Cli::default());
         assert!(cli.timeout.is_none(), "no frame budget, no timeout");
+        assert_eq!(cli.camera, CameraMode::None);
+        assert_eq!(cli.zoom, DEFAULT_ZOOM);
     }
 
     #[test]
@@ -190,6 +280,50 @@ mod tests {
         let cli = parse(&["--capture", "shot.ppm", "--stats"]).expect("valid");
         assert_eq!(cli.capture, Some(PathBuf::from("shot.ppm")));
         assert!(cli.stats);
+    }
+
+    #[test]
+    fn the_camera_and_zoom_are_recorded_in_any_order() {
+        let cli = parse(&["--zoom", "2.5", "--camera", "follow"]).expect("valid");
+        assert_eq!(cli.camera, CameraMode::Follow);
+        assert_eq!(cli.zoom, 2.5);
+
+        let cli = parse(&["--camera", "none"]).expect("valid");
+        assert_eq!(cli.camera, CameraMode::None);
+        assert_eq!(cli.zoom, DEFAULT_ZOOM);
+
+        let cli = parse(&["--camera", "follow"]).expect("valid");
+        assert_eq!(cli.zoom, DEFAULT_ZOOM, "zoom defaults to 1:1");
+    }
+
+    #[test]
+    fn zoom_without_a_camera_is_rejected() {
+        assert_eq!(parse(&["--zoom", "2"]), Err(CliError::ZoomWithoutCamera));
+        assert_eq!(
+            parse(&["--camera", "none", "--zoom", "2"]),
+            Err(CliError::ZoomWithoutCamera)
+        );
+    }
+
+    #[test]
+    fn invalid_camera_values_are_rejected_with_context() {
+        assert_eq!(
+            parse(&["--camera", "orbit"]),
+            Err(CliError::InvalidValue {
+                option: "--camera".to_string(),
+                value: "orbit".to_string(),
+            })
+        );
+        for value in ["0", "-1", "abc", "inf", "nan"] {
+            assert_eq!(
+                parse(&["--camera", "follow", "--zoom", value]),
+                Err(CliError::InvalidValue {
+                    option: "--zoom".to_string(),
+                    value: value.to_string(),
+                }),
+                "zoom {value}"
+            );
+        }
     }
 
     #[test]
@@ -225,6 +359,18 @@ mod tests {
         assert_eq!(
             parse(&["--stats", "--stats"]),
             Err(CliError::DuplicateArgument("--stats".to_string()))
+        );
+        assert_eq!(
+            parse(&["--camera", "follow", "--camera", "none"]),
+            Err(CliError::DuplicateArgument("--camera".to_string()))
+        );
+        assert_eq!(
+            parse(&["--camera", "follow", "--zoom", "2", "--zoom", "3"]),
+            Err(CliError::DuplicateArgument("--zoom".to_string()))
+        );
+        assert_eq!(
+            parse(&["--zoom"]),
+            Err(CliError::MissingValue("--zoom".to_string()))
         );
     }
 }

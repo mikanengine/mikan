@@ -3,6 +3,7 @@
 //! Opens a window, renders a square that moves with the keyboard, and exits
 //! cleanly when the window is closed. See `--help` for the smoke-test options.
 
+mod atlas;
 mod cli;
 mod demo;
 mod ppm;

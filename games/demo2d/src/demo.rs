@@ -4,16 +4,23 @@
 //! [`mikan_platform::App`], so it is driven by the engine's real runtime: fixed
 //! updates timed by `mikan-core`, window and input handling from
 //! `mikan-platform`, and rendering through `mikan-render`.
+//!
+//! Textures come from a procedural atlas (see [`crate::atlas`]); nothing is
+//! loaded from disk yet.
 
 use std::sync::Arc;
 use std::time::Duration;
 
-use mikan_core::{Color, FrameOutcome};
+use mikan_core::{Camera2d, FrameOutcome};
 use mikan_platform::{App, AppContext, KeyCode, PhysicalKey, PhysicalSize, PlatformError};
-use mikan_render::{CaptureBuffer, Frame, Quad2d, RenderSettings, RenderWindow, Renderer};
+use mikan_render::{
+    CaptureBuffer, Frame, RenderSettings, RenderWindow, Renderer, Sprite, Texture,
+    TextureDescriptor,
+};
 use thiserror::Error;
 
-use crate::cli::Cli;
+use crate::atlas;
+use crate::cli::{CameraMode, Cli};
 use crate::ppm;
 use crate::square::{Square, direction_from_keys};
 
@@ -25,11 +32,6 @@ const SQUARE_SPEED: f32 = 420.0;
 const MARKER_SIZE: f32 = 48.0;
 /// Distance of the marker from the bottom-left corner.
 const MARKER_MARGIN: f32 = 24.0;
-
-/// Color of the player square.
-const SQUARE_COLOR: Color = Color::rgb(0.98, 0.55, 0.15);
-/// Color of the static corner marker.
-const MARKER_COLOR: Color = Color::rgb(0.35, 0.75, 0.95);
 
 /// Failures the demo itself can report.
 #[derive(Debug, Error)]
@@ -65,6 +67,9 @@ pub enum DemoError {
 pub struct Demo {
     cli: Cli,
     renderer: Option<Renderer>,
+    /// Atlas texture uploaded at startup, kept alive for the sprites that
+    /// borrow it.
+    atlas: Option<Texture>,
     square: Square,
     viewport: [f32; 2],
     presented: u64,
@@ -83,6 +88,7 @@ impl Demo {
             capture: cli.capture.as_ref().map(|_| CaptureBuffer::new()),
             cli,
             renderer: None,
+            atlas: None,
             square: Square::new([0.0, 0.0], SQUARE_SIZE, SQUARE_SPEED),
             viewport: [0.0, 0.0],
             presented: 0,
@@ -105,8 +111,12 @@ impl Demo {
         ))
     }
 
-    /// Quads for this frame: the player square and a static corner marker.
-    fn quads(&self, alpha: f32) -> [Quad2d; 2] {
+    /// Sprites for this frame: the player square and a static corner marker,
+    /// both sampling their tile of the atlas.
+    ///
+    /// The returned sprites borrow `atlas`, which is why it is a parameter
+    /// rather than read from `self`: the render call borrows `self` mutably.
+    fn sprites<'t>(&self, atlas: &'t Texture, alpha: f32) -> [Sprite<'t>; 2] {
         let center = self.square.interpolated_position(alpha);
         let size = self.square.size();
         let marker_center = [
@@ -114,9 +124,23 @@ impl Demo {
             (self.viewport[1] - MARKER_MARGIN - MARKER_SIZE * 0.5).max(MARKER_SIZE * 0.5),
         ];
         [
-            Quad2d::new(center, [size, size], SQUARE_COLOR),
-            Quad2d::new(marker_center, [MARKER_SIZE, MARKER_SIZE], MARKER_COLOR),
+            Sprite::new(center, [size, size], atlas).with_uv(atlas::tile_uv(atlas::PLAYER_TILE)),
+            Sprite::new(marker_center, [MARKER_SIZE, MARKER_SIZE], atlas)
+                .with_uv(atlas::tile_uv(atlas::MARKER_TILE)),
         ]
+    }
+
+    /// Camera for this frame, or `None` for the pixel-space view.
+    fn camera(&self, alpha: f32) -> Option<Camera2d> {
+        match self.cli.camera {
+            CameraMode::None => None,
+            // The camera centers on the interpolated player position, so the
+            // player stays still on screen while the world scrolls.
+            CameraMode::Follow => Some(Camera2d::new(
+                self.square.interpolated_position(alpha),
+                self.cli.zoom,
+            )),
+        }
     }
 
     /// Writes the most recent captured frame, if one was requested.
@@ -192,12 +216,28 @@ impl App for Demo {
             return Err(PlatformError::app(DemoError::CaptureUnsupported));
         }
 
+        let atlas_data = atlas::build();
+        let atlas = renderer
+            .create_texture(TextureDescriptor::new(
+                atlas_data.width,
+                atlas_data.height,
+                &atlas_data.pixels,
+            ))
+            .map_err(|error| PlatformError::app(DemoError::from(error)))?;
+
         let info = renderer.adapter_info();
         log::info!(
             "rendering with {} ({:?}), swap chain format {:?}",
             info.name,
             info.backend,
             renderer.surface_format()
+        );
+        log::info!(
+            "textures: procedural atlas {}x{}, {} tiles of {}px",
+            atlas_data.width,
+            atlas_data.height,
+            atlas::ATLAS_COLUMNS * atlas::ATLAS_ROWS,
+            atlas::TILE_SIZE
         );
         log::info!("controls: WASD or arrow keys to move, Escape to quit");
 
@@ -207,6 +247,7 @@ impl App for Demo {
             SQUARE_SIZE,
             SQUARE_SPEED,
         );
+        self.atlas = Some(atlas);
         self.renderer = Some(renderer);
         Ok(())
     }
@@ -250,13 +291,23 @@ impl App for Demo {
 
         let alpha = ctx.alpha();
         let clear_color = ctx.config().clear_color;
-        let quads = self.quads(alpha);
+
+        // Sprites borrow the atlas, so they are built before the renderer is
+        // borrowed mutably; the borrows are disjoint fields of `self`.
+        let Some(atlas) = self.atlas.as_ref() else {
+            return Ok(FrameOutcome::Idle);
+        };
+        let sprites = self.sprites(atlas, alpha);
+        let camera = self.camera(alpha);
+        let mut frame = Frame::new(clear_color).with_sprites(&sprites);
+        if let Some(camera) = camera {
+            frame = frame.with_camera(camera);
+        }
 
         let Some(renderer) = self.renderer.as_mut() else {
             return Ok(FrameOutcome::Idle);
         };
 
-        let frame = Frame::new(clear_color).with_quads(&quads);
         let capturing = self.capture.is_some();
         let outcome = renderer
             .render_frame(&frame, self.capture.as_mut())
