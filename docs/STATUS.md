@@ -1,10 +1,10 @@
 # Mikan status
 
 - **Date:** 2026-10-15
-- **Revision:** working tree on top of `main` @ `53afe21` ("docs: add the status
-  report and document verification"), which is pushed to `origin/main`. What is
-  on top of that commit is listed under
-  [Uncommitted changes](#uncommitted-changes-at-the-time-of-writing).
+- **Revision:** `main` @ `1de2e22` ("docs: document the sprites and camera
+  milestone"), pushed to `origin/main`; the refresh of this status text is the
+  commit that contains this line. The milestone commits are listed under
+  [Milestone changes](#milestone-changes-committed-to-main).
 - **Purpose:** state precisely what is implemented, how each claim was verified,
   and what is known to be missing. Verification levels follow ADR 0005: nothing
   is called *verified* unless it was run.
@@ -85,20 +85,22 @@ representative of GPU or display performance and must not be quoted as such.
 
 ## Verification: CI
 
-[Run 38731320882](https://github.com/neverseeyouagainnnnn/mikan/actions/runs/38731320882)
-for commit `9eaaed8`:
+Every commit on `main` has a green CI run. Latest:
+[38747734131](https://github.com/neverseeyouagainnnnn/mikan/actions/runs/38747734131)
+for commit `1de2e22` — the sprites, textures, and camera milestone:
 
 | Job | Result | Duration |
 | --- | --- | --- |
-| Quality (Ubuntu): fmt, check, tests, clippy, release build | success | 4m21s |
-| Headless smoke test (Xvfb + lavapipe) | success | 3m23s |
-| Compile check (macos-latest) | success | 27s |
-| Compile check (windows-latest) | success | 2m7s |
+| Quality (Ubuntu): fmt, check, tests, clippy, release build | success | 1m25s |
+| Headless smoke test (Xvfb + lavapipe): smoke, input, camera, artifacts | success | 2m57s |
+| Compile check (macos-latest) | success | 30s |
+| Compile check (windows-latest) | success | 1m49s |
 
-The run covers `9eaaed8`; two commits later (`53afe21`) already carried the input
-fix and its CI step, which have not run remotely either. The current working
-tree — sprites, textures, the camera, and the camera-verification CI step — was
-verified locally but has not run in CI yet; the next push exercises it.
+[Run 38734036511](https://github.com/neverseeyouagainnnnn/mikan/actions/runs/38734036511)
+covers `53afe21` (input verification end to end) and
+[38731320882](https://github.com/neverseeyouagainnnnn/mikan/actions/runs/38731320882)
+covers `9eaaed8`; both are green, so the milestone is runtime-verified in CI and
+not only locally.
 
 Known CI annotations (non-failing): GitHub reports that `actions/checkout@v4`,
 `actions/cache@v4`, and `actions/upload-artifact@v4` target Node.js 20, which is
@@ -137,34 +139,27 @@ green configuration stays pinned until the next push validates the change.
 - **Performance:** no GPU measurements exist. The frame times above describe
   `lavapipe` and are labeled as such.
 
-## Uncommitted changes at the time of writing
+## Milestone changes (committed to `main`)
 
-On top of `53afe21` (all verified locally by `./scripts/verify.sh`):
+Three commits on top of `53afe21`:
 
-- `crates/mikan-core/src/camera.rs` — `Camera2d` (new); re-exported from the crate
-  root.
-- `crates/mikan-render/src/sprite.rs`, `sprite.wgsl` — `Sprite`, `UvRect`, the
-  48-byte instance, `plan_batches` (consecutive same-texture runs), the
-  view/projection matrix, and the fallback-texture sprite pipeline; replace
-  `quad.rs`/`quad.wgsl`.
-- `crates/mikan-render/src/texture.rs` — `Texture`, `TextureDescriptor`, and the
-  pure `validate` used by `Renderer::create_texture` (new).
-- `crates/mikan-render/src/renderer.rs`, `lib.rs`, `error.rs` — `Frame` gains a
-  camera and sprites; texture creation and its error variants; per-run draw
-  calls; the viewport-uniform path is gone.
-- `games/demo2d/src/atlas.rs` — procedural two-tile atlas (new);
-  `cli.rs` adds `--camera`/`--zoom` (and rejects zoom without a camera);
-  `demo.rs` uploads the atlas and renders textured sprites under the selected
-  camera.
-- `scripts/lib.sh`, `scripts/verify_camera.sh`, `scripts/verify_camera.py`,
-  `scripts/ppm.py` — shared X11 helpers with PID-scoped cleanup, the camera
-  end-to-end checks, and the shared PPM parser (new); `verify_input.sh` and
-  `verify_capture.py` now use them.
-- `.github/workflows/ci.yml` — the smoke job runs the camera verification and
-  uploads every captured frame.
-- `README.md`, `docs/ARCHITECTURE.md`, `docs/DEVELOPMENT.md`, `CHANGELOG.md`,
-  `docs/adr/0006-textured-sprites-and-2d-camera.md` (+ ADR index) — documentation
-  for the milestone, including the record that no native module was added.
+- `128ab33` — **render: replace the quad pipeline with textured sprites and a
+  camera**: `Camera2d` in `mikan-core`; `Sprite`, `UvRect`, the 48-byte
+  instance, `plan_batches` (consecutive same-texture runs), the
+  view/projection matrix, and the fallback-texture pipeline in `mikan-render`
+  (`quad.rs`/`quad.wgsl` removed); validated linear RGBA8 texture upload; the
+  demo's procedural atlas and `--camera`/`--zoom`.
+- `476cf13` — **verification: check the 2D camera end to end in scripts and CI**:
+  `scripts/lib.sh` (shared X11 helpers, PID-scoped cleanup), `scripts/ppm.py`
+  (shared PPM parser), `scripts/verify_camera.sh`/`.py` (follow and zoom
+  checks), and the camera-verification step in the CI smoke job.
+- `1de2e22` — **docs: document the sprites and camera milestone**: ADR 0006
+  (decisions and the no-native-module rationale) plus README, ARCHITECTURE,
+  DEVELOPMENT, STATUS, CONTRIBUTING, and CHANGELOG updates.
+
+All three ran through CI in run 38747734131 (above); the local
+`./scripts/verify.sh` runs before the push produced the evidence quoted in the
+runtime section.
 
 ## Next milestone
 
