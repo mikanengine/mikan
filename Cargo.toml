@@ -1,0 +1,45 @@
+[workspace]
+resolver = "3"
+members = ["crates/*", "games/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.87"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/neverseeyouagainnnnn/mikan"
+description = "A small, modular game engine. 2D first, then 3D. Rust at the core, C at the foundation, C++ where it counts."
+keywords = ["game-engine", "gamedev", "wgpu", "winit", "2d"]
+categories = ["game-engines", "graphics", "game-development"]
+
+[workspace.dependencies]
+# Engine crates
+mikan-core = { path = "crates/mikan-core", version = "0.1.0" }
+mikan-platform = { path = "crates/mikan-platform", version = "0.1.0" }
+mikan-render = { path = "crates/mikan-render", version = "0.1.0" }
+
+# Upstream dependencies. Versions are the oldest release of the current
+# compatible series that has been verified to build with the pinned toolchain.
+bytemuck = { version = "1.25", features = ["derive"] }
+env_logger = { version = "0.11.11", default-features = false, features = ["auto-color", "humantime"] }
+log = "0.4.34"
+pollster = "1.0"
+raw-window-handle = "0.6.2"
+thiserror = "2.0"
+wgpu = "30.0.1"
+winit = "0.30.13"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+unused_must_use = "deny"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+dbg_macro = "deny"
+todo = "deny"
+unimplemented = "deny"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1

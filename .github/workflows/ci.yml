@@ -1,0 +1,105 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  # Formatting, lints, tests, and a release build on the primary platform.
+  quality:
+    name: Quality (Ubuntu)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the pinned toolchain
+        run: rustup toolchain install
+
+      - name: Cache the cargo registry and build directory
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Check types (all targets)
+        run: cargo check --workspace --all-targets
+
+      - name: Run tests
+        run: cargo test --workspace
+
+      - name: Run clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Build in release mode
+        run: cargo build --workspace --release
+
+  # Runs the real demo on a virtual display with a software Vulkan device,
+  # presents a fixed number of frames, and verifies the captured image.
+  # See docs/adr/0005-cross-platform-validation.md for what this does and does
+  # not prove.
+  smoke:
+    name: Headless smoke test (Xvfb + lavapipe)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install a virtual display and a software Vulkan driver
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            xvfb mesa-vulkan-drivers libxkbcommon-x11-0 libx11-xcb1
+
+      - name: Install the pinned toolchain
+        run: rustup toolchain install
+
+      - name: Build the demo
+        run: cargo build --release -p demo2d
+
+      - name: Run the demo headlessly
+        run: |
+          mkdir -p artifacts
+          xvfb-run -a ./target/release/demo2d \
+            --frames 120 \
+            --capture artifacts/frame.ppm \
+            --stats
+
+      - name: Verify the captured frame
+        run: python3 scripts/verify_capture.py artifacts/frame.ppm
+
+      - name: Upload the captured frame
+        uses: actions/upload-artifact@v4
+        with:
+          name: demo2d-frame
+          path: artifacts/frame.ppm
+          if-no-files-found: error
+
+  # Compile-only portability check. This proves the code builds for Windows and
+  # macOS; it does not prove anything about runtime behavior there.
+  cross-platform-check:
+    name: Compile check (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the pinned toolchain
+        run: rustup toolchain install
+
+      - name: Check types (all targets)
+        run: cargo check --workspace --all-targets

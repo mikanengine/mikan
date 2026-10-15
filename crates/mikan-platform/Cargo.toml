@@ -1,0 +1,19 @@
+[package]
+name = "mikan-platform"
+description = "Window lifecycle, input, and the application loop for Mikan."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+mikan-core.workspace = true
+log.workspace = true
+thiserror.workspace = true
+winit.workspace = true

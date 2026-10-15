@@ -1,0 +1,14 @@
+# Rust build artifacts
+/target
+**/*.rs.bk
+*.pdb
+
+# Local smoke-test / capture artifacts
+/artifacts/
+*.ppm
+
+# Editor and OS noise
+.DS_Store
+.idea/
+.vscode/
+*.swp

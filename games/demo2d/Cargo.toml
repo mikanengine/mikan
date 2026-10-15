@@ -1,0 +1,23 @@
+[package]
+name = "demo2d"
+description = "Runnable 2D demonstration of the Mikan engine runtime."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "demo2d"
+path = "src/main.rs"
+
+[dependencies]
+mikan-core.workspace = true
+mikan-platform.workspace = true
+mikan-render.workspace = true
+log.workspace = true
+thiserror.workspace = true
