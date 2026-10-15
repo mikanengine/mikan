@@ -14,6 +14,7 @@ categories = ["game-engines", "graphics", "game-development"]
 
 [workspace.dependencies]
 # Engine crates
+mikan = { path = "crates/mikan", version = "0.1.0" }
 mikan-core = { path = "crates/mikan-core", version = "0.1.0" }
 mikan-platform = { path = "crates/mikan-platform", version = "0.1.0" }
 mikan-render = { path = "crates/mikan-render", version = "0.1.0" }

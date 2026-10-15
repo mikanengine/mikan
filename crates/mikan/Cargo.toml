@@ -1,0 +1,19 @@
+[package]
+name = "mikan"
+description = "Engine facade for Mikan: one dependency that composes the platform and render layers into an application lifecycle."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+mikan-core.workspace = true
+mikan-platform.workspace = true
+mikan-render.workspace = true
+thiserror.workspace = true

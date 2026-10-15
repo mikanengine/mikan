@@ -929,6 +929,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "mikan"
+version = "0.1.0"
+dependencies = [
+ "mikan-core",
+ "mikan-platform",
+ "mikan-render",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "mikan-core"
 version = "0.1.0"
 dependencies = [
