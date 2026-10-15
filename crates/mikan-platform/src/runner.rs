@@ -16,6 +16,11 @@
 //! interpolation alpha for the render call. The simulation rate is therefore
 //! independent of the display refresh rate, and a single long frame cannot
 //! trigger an unbounded catch-up loop.
+//!
+//! Because a frame may run zero fixed updates when the display refreshes faster
+//! than the simulation, input press/release edges are only cleared after a frame
+//! that ran at least one update. A tap that arrives between two updates is
+//! therefore always observed by the next one instead of being discarded.
 
 use std::sync::Arc;
 
@@ -209,9 +214,15 @@ impl<A: App> Runner<A> {
             }
         };
 
-        // Edge state belongs to this frame only; clear it once the application
-        // has seen it in every fixed update and in the render call.
-        self.input.end_frame();
+        // Edge state belongs to the frame that observes it, so it is cleared
+        // once the application has seen it in a fixed update and in the render
+        // call. When no fixed update ran this frame — which is the common case
+        // when the display refreshes faster than the simulation — the edges are
+        // kept for the next frame, because clearing them here would drop a
+        // press that arrived between two updates.
+        if steps > 0 {
+            self.input.end_frame();
+        }
         self.idle = !outcome.should_continue() || self.occluded;
 
         if self.exit_requested {
