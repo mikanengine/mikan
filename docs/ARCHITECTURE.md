@@ -53,6 +53,9 @@ without pulling in the platform stack.
 - `FixedTimestep` — accumulator that converts frame deltas into a bounded number
   of fixed steps plus an interpolation alpha.
 - `FrameOutcome` — the shared result of a frame: `Presented`, `Skipped`, `Idle`.
+- `Camera2d` — position plus zoom, with `world_to_screen` as the reference
+  transformation and a sanitizing `effective_zoom`; no graphics dependency, so
+  gameplay math and rendering share one definition.
 - `Color` — linear RGBA, deliberately independent of `wgpu::Color`.
 - `init_logging` — one-shot `env_logger` initialization honoring `RUST_LOG`.
 
@@ -81,8 +84,12 @@ Everything between a window handle and a presented frame.
   providers, so the renderer needs no windowing library dependency. `winit`
   windows, SDL windows, and anything else implementing `raw-window-handle`
   satisfy it.
-- `Quad2d` / `Frame` — a flat colored rectangle in screen space, and the frame
-  description: clear color plus the quads to draw.
+- `Sprite` / `UvRect` / `Frame` — a rectangle in world space, flat or textured
+  through an atlas-ready UV rectangle, and the frame description: clear color,
+  optional camera, and the sprites to draw.
+- `Texture` / `TextureDescriptor` — textures uploaded from linear RGBA8 pixels
+  and validated before any GPU resource is created; a texture is usable only
+  with the `Renderer` that created it.
 - `CaptureBuffer` — optional single-frame readback (RGBA8) used by tests and
   tooling.
 
@@ -90,7 +97,7 @@ Everything between a window handle and a presented frame.
 
 The application. It owns gameplay state (`Square`), reads input from and writes
 outputs to the engine through the public APIs only, and contains the command-line
-interface, the PPM writer, and the frame-time statistics.
+interface, the procedural atlas, the PPM writer, and the frame-time statistics.
 
 ## 3. Dependency direction
 
@@ -205,8 +212,8 @@ Properties this gives us:
 5. Choose a surface configuration: prefer an sRGB format if offered, add
    `COPY_SRC` usage when the surface supports it (frames become capturable), and
    select `AutoVsync` or `AutoNoVsync`.
-6. Build the quad pipeline and configure the surface (skipped while the window
-   has zero area).
+6. Build the sprite pipeline (including the 1×1 fallback texture) and configure
+   the surface (skipped while the window has zero area).
 
 Per frame, `render_frame` classifies the swap chain state and acts:
 
@@ -229,17 +236,27 @@ clear message instead of producing corrupt frames.
 (minimized) is recorded but not configured, because swap chains must be non-zero;
 frames report `Idle` until a usable size returns.
 
-### Quad rendering
+### Sprite rendering
 
-The only geometry primitive is `Quad2d`: center, size, and color in physical
-pixels with the origin at the top-left corner and y growing downward, matching
-cursor coordinates. All quads in a frame are drawn with **one instanced draw
-call**: a static six-vertex unit square plus one instance per quad
-(32 bytes: `center`, `size`, `color`). The instance buffer grows
-geometrically when a frame needs more instances than it currently holds.
+The geometry primitive is `Sprite`: center, size, color, an optional texture,
+and a UV rectangle, all in world units. A frame renders through an optional
+`Camera2d`; without one, `Camera2d::pixel_space` maps world units 1:1 to
+physical pixels with the origin at the top-left corner, reproducing the
+pre-camera behavior exactly. Every frame is drawn with:
 
-This is intentionally not a sprite renderer: there are no textures, no atlas, no
-camera, and no batching heuristics, because nothing needs them yet.
+- one static six-vertex unit square shared by all sprites,
+- one instance per sprite (48 bytes: `center`, `size`, `color`, `uv`),
+- one instanced draw call per **consecutive run of sprites that share a
+  texture** — painter order equals submission order, sprites are never
+  reordered, and solid sprites share a 1×1 white fallback texture,
+- one camera uniform (a `mat4x4` view/projection matrix built from
+  `Camera2d`), and one texture bind group per texture.
+
+The instance buffer grows geometrically when a frame needs more instances than
+it currently holds. Texture descriptors are validated (non-zero, within
+`max_texture_dimension_2d`, exact data length) before any GPU resource is
+created, and textures are linear RGBA8 with a single mip level, uploaded from
+memory — there is no image loader yet.
 
 ## 7. Error-handling strategy
 
@@ -294,19 +311,20 @@ own tests and a safe wrapper, or it does not arrive.
 
 These are seams the current design leaves open. None of them are implemented.
 
-- **Textures and sprites.** `Quad2d` becomes an instance with an atlas index and
-  UV rectangle; the quad pipeline gains a texture bind group. The instance
-  layout is versioned by a unit test that checks attribute offsets, so a change
-  that drifts from the shader fails the test suite.
-- **Camera.** The viewport uniform generalizes to a view/projection matrix; the
-  pixel-space vertex stage becomes a matrix multiply.
 - **Engine facade.** A `mikan` crate can own the wiring that `demo2d` currently
   does in `App::init`, so applications stop composing platform and rendering
   manually.
+- **Sprite sorting / batching heuristics.** `plan_batches` currently merges
+  only consecutive sprites sharing a texture; a sorter that groups across
+  submission order (z layers, texture keys) is a local change once painter
+  order can be expressed independently of submission order.
+- **Image loading.** `Renderer::create_texture` takes decoded linear RGBA8
+  pixels; an asset step that decodes files (and decides between sRGB and linear
+  formats) plugs in front of it without changing the renderer.
 - **ECS-lite.** `App::update` is the natural place to drive systems; the fixed
   timestep already provides a deterministic schedule.
 - **Frame graph / passes.** `render_frame` is the single place where pass
   recording happens; splitting it into ordered passes is a local change.
 - **Native modules.** `mikan-core` is the intended home for safe wrappers around
   small C modules (for example an arena allocator), behind the rules in
-  `FFI.md`.
+  `ffi.md`.

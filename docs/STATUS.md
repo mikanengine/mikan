@@ -1,8 +1,9 @@
 # Mikan status
 
 - **Date:** 2026-10-15
-- **Revision:** working tree on top of `main` @ `9eaaed8` ("Add demo2d"), which is
-  pushed to `origin/main`. What is on top of that commit is listed under
+- **Revision:** working tree on top of `main` @ `53afe21` ("docs: add the status
+  report and document verification"), which is pushed to `origin/main`. What is
+  on top of that commit is listed under
   [Uncommitted changes](#uncommitted-changes-at-the-time-of-writing).
 - **Purpose:** state precisely what is implemented, how each claim was verified,
   and what is known to be missing. Verification levels follow ADR 0005: nothing
@@ -17,14 +18,28 @@ driven by the engine's own runtime: timing and configuration from `mikan-core`,
 window lifecycle and input from `mikan-platform`, device/surface/present and
 drawing from `mikan-render`.
 
+## Milestone: textured sprites and a minimal 2D camera — complete
+
+`Quad2d` was replaced by `Sprite`: a rectangle in world space that is either
+flat-colored or samples a texture through an atlas-ready UV rectangle. Textures
+are uploaded from linear RGBA8 data after validation, drawn with one instanced
+draw call per consecutive run of sprites sharing a texture (painter order equals
+submission order, sprites are never reordered), and rendered through an optional
+`Camera2d` (position and zoom, defined in `mikan-core`, applied in
+`mikan-render` as a view/projection matrix). A frame without a camera renders in
+pixel space through `Camera2d::pixel_space`, reproducing the previous milestone
+exactly. The demo generates a two-tile atlas in code, adds `--camera <none|follow>`
+and `--zoom <factor>`, and the milestone contains **no C or C++** — ADR 0006
+records why the native-module criteria (ADR 0004, `docs/ffi.md`) are unmet.
+
 ## What is implemented
 
 | Area | What exists | Coverage |
 | --- | --- | --- |
-| `mikan-core` | `EngineConfig` + validation (`ConfigError`), `Color`, `Time` with delta clamping and a zero first tick, `FixedTimestep` with bounded catch-up and interpolation alpha, `FrameOutcome`, one-shot `init_logging` | 17 unit tests |
+| `mikan-core` | `EngineConfig` + validation (`ConfigError`), `Color`, `Time` with delta clamping and a zero first tick, `FixedTimestep` with bounded catch-up and interpolation alpha, `FrameOutcome`, `Camera2d` (position, zoom, `world_to_screen`, sanitizing `effective_zoom`, `pixel_space`), one-shot `init_logging` | 22 unit tests |
 | `mikan-platform` | `App` lifecycle trait, `AppContext`, `InputState` (held state, press/release edges, cursor delta, focus release), `winit` runner with occlusion/suspension-aware waiting and input-edge consumption | 9 unit tests, 1 doc test |
-| `mikan-render` | `wgpu` instance/adapter/device/queue/surface, format/alpha/present-mode selection, explicit handling of every swap chain state, resize (including zero-sized), device-lost reporting, instanced quad pipeline, RGBA8 capture readback | 14 unit tests, 1 doc test |
-| `games/demo2d` | CLI (`--frames`, `--capture`, `--stats`, `--timeout`, `--help`), fixed-step square with interpolation, corner marker, PPM writer, capture | 16 unit tests |
+| `mikan-render` | `wgpu` instance/adapter/device/queue/surface, format/alpha/present-mode selection, explicit handling of every swap chain state, resize (including zero-sized), device-lost reporting, validated linear RGBA8 texture upload, instanced sprite pipeline (flat or textured, UV rectangles, per-run batching), camera view/projection matrix, RGBA8 capture readback | 26 unit tests, 1 doc test |
+| `games/demo2d` | CLI (`--frames`, `--capture`, `--stats`, `--timeout`, `--camera`, `--zoom`, `--help`), fixed-step square with interpolation, procedural two-tile atlas, corner marker, PPM writer, capture | 23 unit tests |
 
 ## Verification: build and tests (this revision, local)
 
@@ -32,7 +47,7 @@ drawing from `mikan-render`.
 | --- | --- |
 | `cargo fmt --all -- --check` | pass |
 | `cargo check --workspace --all-targets` | pass |
-| `cargo test --workspace` | **58 pass, 0 fail** — 16 demo2d, 17 core, 9 platform, 14 render, 2 doc tests |
+| `cargo test --workspace` | **82 pass, 0 fail** — 23 demo2d, 22 core, 9 platform, 26 render, 2 doc tests |
 | `cargo clippy --workspace --all-targets -- -D warnings` | pass |
 | `cargo build --workspace --release` | pass |
 
@@ -47,22 +62,26 @@ format `Bgra8UnormSrgb`, present mode `AutoVsync`.
 | Check | Command | Observed result |
 | --- | --- | --- |
 | Frame presentation + capture | `xvfb-run -a ./target/release/demo2d --frames 120 --capture artifacts/frame.ppm --stats` | 120 of 120 frames presented, exit 0, 960x600 PPM written |
-| Captured image contents | `python3 scripts/verify_capture.py artifacts/frame.ppm` | verified; background `(63, 69, 80)`, square center `(253, 196, 108)`, marker `(160, 225, 249)` |
-| Keyboard movement | `xvfb-run -a bash scripts/verify_input.sh` | holding `D` for 1 s moved the square from x=480 to x=910 (420 px/s, inside the 912 px wall clamp); y unchanged |
+| Captured image contents | `python3 scripts/verify_capture.py artifacts/frame.ppm` | verified; background `(63, 69, 80)`, square center `(253, 195, 108)` |
+| Texture sampling | pixel probe of the same capture | square border `(179, 129, 64)` differs from its fill, marker tile center `(159, 224, 249)` and border `(90, 149, 188)` are the other tile: both atlas tiles are sampled, not flat colors |
+| Keyboard movement | `xvfb-run -a bash scripts/verify_input.sh` | holding `D` for 1 s moved the square from x=480 to x=912 (420 px/s, the right wall clamp); y unchanged |
 | Escape quits | as above | a short tap of `Escape` exited with status 0, without reaching the frame-budget timeout |
-| Frame budget timeout | `--frames 100000000 --timeout 1` | exit 1: `presented 675 of 100000000 requested frames within 1s` |
+| Follow camera | `xvfb-run -a bash scripts/verify_camera.sh` | after the same 1 s hold the square's **world** position was x=912, while the capture shows it 95x96 px at `[432..526, 252..347]`, centroid `(480.2, 300.7)` — centred, so the view scrolled with it |
+| Zoom | as above (`--camera follow --zoom 2`) | the square renders 191x192 px centred (`[384..574, 204..395]`, centroid `(481.5, 302.0)`) — twice the 96 px of the unzoomed path |
+| Frame budget timeout | `--frames 100000000 --timeout 1` | exit 1: `presented 640 of 100000000 requested frames within 1s` |
 | Unwritable capture path | `--frames 5 --capture /definitely/not/a/dir/f.ppm` | exit 1: `could not write ...: No such file or directory` |
 | Invalid argument | `--nope` | exit 1: `unknown argument '--nope'` |
-| Help | `--help` | exit 0, usage printed |
+| Zoom without camera | `--zoom 2` | exit 1: `'--zoom' requires '--camera'` |
+| Help | `--help` | exit 0, usage printed (camera options listed) |
 
-Captured pixels are consistent with the configured linear colors converted to
-sRGB by the swap chain format, which also confirms the clear color, both quads,
-and the readback path agree.
+Captured pixels are consistent with the configured linear colors and texels
+converted to sRGB by the swap chain format, which confirms the clear color,
+texture upload and sampling, and the readback path agree.
 
-Frame times over those 120 frames: mean 2.53 ms, p50 2.06 ms, p95 4.99 ms,
-max 13.99 ms. These describe a **software rasterizer under a virtual display**
-with no real vsync; they are not representative of GPU or display performance
-and must not be quoted as such.
+Frame times over those 120 frames (one run; they vary between runs): mean
+2.03 ms, p50 1.70 ms, p95 3.35 ms, max 12.50 ms. These describe a **software
+rasterizer under a virtual display** with no real vsync; they are not
+representative of GPU or display performance and must not be quoted as such.
 
 ## Verification: CI
 
@@ -76,9 +95,10 @@ for commit `9eaaed8`:
 | Compile check (macos-latest) | success | 27s |
 | Compile check (windows-latest) | success | 2m7s |
 
-The run covers `9eaaed8`. The uncommitted changes below — surface alpha-mode
-selection, the dropped-input fix, and the new input-verification CI step — were
-verified locally but have not run in CI yet; the next push exercises them.
+The run covers `9eaaed8`; two commits later (`53afe21`) already carried the input
+fix and its CI step, which have not run remotely either. The current working
+tree — sprites, textures, the camera, and the camera-verification CI step — was
+verified locally but has not run in CI yet; the next push exercises it.
 
 Known CI annotations (non-failing): GitHub reports that `actions/checkout@v4`,
 `actions/cache@v4`, and `actions/upload-artifact@v4` target Node.js 20, which is
@@ -89,7 +109,7 @@ green configuration stays pinned until the next push validates the change.
 
 | Platform | Level | Evidence |
 | --- | --- | --- |
-| Linux / X11 (software Vulkan) | **runtime-verified** | local smoke + input checks, CI smoke job |
+| Linux / X11 (software Vulkan) | **runtime-verified** | local smoke + input + camera checks, CI smoke job |
 | Windows x86-64 | **compile-verified** | CI `cargo check --workspace --all-targets` |
 | macOS (arm64) | **compile-verified** | CI `cargo check --workspace --all-targets` |
 | Linux / Wayland | not verified | path exists through `winit`; never exercised |
@@ -97,9 +117,13 @@ green configuration stays pinned until the next push validates the change.
 
 ## Known limitations
 
-- **Graphics scope:** flat colored quads only. No textures, sprites, camera,
-  materials, depth buffer, or batching heuristics; one pipeline, one instanced
-  draw call per frame.
+- **Graphics scope:** sprites are axis-aligned rectangles with no rotation;
+  textures are linear RGBA8 with a single mip, uploaded from memory by the
+  application (no image loading, atlas packing, or sRGB textures); batching
+  merges only consecutive sprites sharing a texture and never reorders them to
+  reduce draw calls; one pipeline; no depth buffer, materials, or 3D.
+- **Camera scope:** position and zoom only — no rotation, bounds, smoothing, or
+  parallax. Games implement those on top of `Camera2d`.
 - **Engine scope:** no ECS, physics, audio, asset pipeline, or 3D. None of these
   are partially implemented or stubbed.
 - **Capture:** blocking readback, PPM output only, and restricted to RGBA8/BGRA8
@@ -115,40 +139,48 @@ green configuration stays pinned until the next push validates the change.
 
 ## Uncommitted changes at the time of writing
 
-On top of `9eaaed8` (all verified locally by `./scripts/verify.sh`):
+On top of `53afe21` (all verified locally by `./scripts/verify.sh`):
 
-- `crates/mikan-platform/src/runner.rs` — input press/release edges are consumed
-  only by frames that ran a fixed update, so a tap can no longer be dropped
-  between two simulation steps.
-- `crates/mikan-render/src/renderer.rs` — the surface alpha mode is chosen from
-  the modes the surface actually advertises (previously `Auto` was configured
-  unconditionally).
-- `games/demo2d/src/demo.rs` — a capture is written only after the readback
-  succeeded, and a failed write is not retried during shutdown.
-- `scripts/verify.sh`, `scripts/verify_input.sh` — one-command verification and
-  synthetic-input end-to-end checks (new files).
-- `.github/workflows/ci.yml` — the smoke job installs `xdotool` plus the explicit
-  X11 runtime libraries and runs the input verification.
-- `README.md`, `docs/ARCHITECTURE.md`, `docs/DEVELOPMENT.md`, `CONTRIBUTING.md` —
-  documentation updated for the license file rename, the input fix, and the new
-  scripts.
+- `crates/mikan-core/src/camera.rs` — `Camera2d` (new); re-exported from the crate
+  root.
+- `crates/mikan-render/src/sprite.rs`, `sprite.wgsl` — `Sprite`, `UvRect`, the
+  48-byte instance, `plan_batches` (consecutive same-texture runs), the
+  view/projection matrix, and the fallback-texture sprite pipeline; replace
+  `quad.rs`/`quad.wgsl`.
+- `crates/mikan-render/src/texture.rs` — `Texture`, `TextureDescriptor`, and the
+  pure `validate` used by `Renderer::create_texture` (new).
+- `crates/mikan-render/src/renderer.rs`, `lib.rs`, `error.rs` — `Frame` gains a
+  camera and sprites; texture creation and its error variants; per-run draw
+  calls; the viewport-uniform path is gone.
+- `games/demo2d/src/atlas.rs` — procedural two-tile atlas (new);
+  `cli.rs` adds `--camera`/`--zoom` (and rejects zoom without a camera);
+  `demo.rs` uploads the atlas and renders textured sprites under the selected
+  camera.
+- `scripts/lib.sh`, `scripts/verify_camera.sh`, `scripts/verify_camera.py`,
+  `scripts/ppm.py` — shared X11 helpers with PID-scoped cleanup, the camera
+  end-to-end checks, and the shared PPM parser (new); `verify_input.sh` and
+  `verify_capture.py` now use them.
+- `.github/workflows/ci.yml` — the smoke job runs the camera verification and
+  uploads every captured frame.
+- `README.md`, `docs/ARCHITECTURE.md`, `docs/DEVELOPMENT.md`, `CHANGELOG.md`,
+  `docs/adr/0006-textured-sprites-and-2d-camera.md` (+ ADR index) — documentation
+  for the milestone, including the record that no native module was added.
 
 ## Next milestone
 
 Ordered by intended value; each needs its own design note before implementation.
 
-1. **Textures and sprites with a 2D camera** — instance carries an atlas index
-   and UV rectangle; the quad pipeline gains a texture bind group; the viewport
-   uniform becomes a view/projection matrix.
-2. **Engine facade crate (`mikan`)** — owns the platform/render composition that
+1. **Engine facade crate (`mikan`)** — owns the platform/render composition that
    `demo2d` currently performs by hand, so applications stop wiring layers.
-3. **ECS-lite** — entity storage and systems scheduled on the existing fixed
+2. **ECS-lite** — entity storage and systems scheduled on the existing fixed
    timestep.
-4. **2D collision** — broad phase plus AABB resolution against the same fixed
+3. **2D collision** — broad phase plus AABB resolution against the same fixed
    step.
+4. **Asset loading with hot reload** — once there is something to load; image
+   decoding plugs in front of `Renderer::create_texture`.
 5. **Platform verification** — runtime-verify Windows and macOS (and Wayland)
    per ADR 0005, and record a hardware-GPU measurement.
-6. **Asset loading with hot reload** — once there is something to load.
 
 Native C/C++ modules remain out of scope until a measured need meets every
-criterion in `docs/ffi.md` and ADR 0004.
+criterion in `docs/ffi.md` and ADR 0004; ADR 0006 repeats that finding for this
+milestone rather than leaving it implicit.

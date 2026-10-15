@@ -60,6 +60,18 @@ Demo controls: `WASD` or arrow keys move the square, `Escape` quits, and closing
 the window quits. The demo exits with a non-zero status and a readable message if
 initialization or rendering fails.
 
+The demo renders a small procedural texture atlas (a player tile and a marker
+tile) and can render through a camera:
+
+```bash
+cargo run -p demo2d --release -- --camera follow        # camera tracks the player
+cargo run -p demo2d --release -- --camera follow --zoom 2   # zoomed in 2x
+```
+
+`--zoom` requires a camera; it is rejected on its own rather than silently
+ignored. The default is `--camera none`, which renders in pixel space exactly as
+the pre-camera milestone did.
+
 ## Quality gates
 
 Run these before pushing; CI runs the same set and fails on any deviation.
@@ -78,8 +90,9 @@ Or run all of them, plus the headless runtime checks, with one command:
 ./scripts/verify.sh
 ```
 
-The script also runs the smoke test and capture verification below when
-`xvfb-run` is available, and skips them with a notice when it is not.
+The script also runs the headless smoke test, the capture, input, and camera
+verification below when `xvfb-run` (and, for the latter two, `xdotool`) is
+available, and skips them with a notice when it is not.
 
 Logging is controlled with the standard `RUST_LOG` environment variable:
 
@@ -166,6 +179,26 @@ updates, and input press edges were being discarded at the end of those frames.
 A tapped Escape key was therefore lost. The runner now consumes input edges only
 on frames that ran an update.
 
+### Verifying the 2D camera
+
+The follow camera and `--zoom` are verified the same way — by moving the player
+and looking at what was actually rendered:
+
+```bash
+xvfb-run -a bash scripts/verify_camera.sh
+```
+
+The script holds `D` for one second and then checks two things at once: the
+demo log must report the square at its moved *world* position, and the captured
+frame must show the square at the *centre of the screen*. If the camera did not
+follow, the square would sit near the right edge of the capture instead. It then
+renders with `--zoom 2` and checks that the square covers roughly twice the
+pixels.
+
+Both checks find the square by colour (`scripts/verify_camera.py`), so they also
+exercise the texture path: the player tile has a darker border and a diagonal
+highlight, and a diagonal edge cannot come from an axis-aligned flat rectangle.
+
 ### Frame-time statistics
 
 `--stats` prints mean, p50, p95, and max frame times and the implied average
@@ -191,8 +224,8 @@ number produced on a different machine as if it applied to this one.
 - `unsafe_code` is forbidden workspace-wide. This is a deliberate constraint:
   if a change needs `unsafe`, it needs an accepted ADR first.
 - Tests live next to the code they test (`#[cfg(test)] mod tests`). Pure logic —
-  timing, input edges, image encoding, quad layout — is unit-tested without a
-  GPU or a window.
+  timing, input edges, image encoding, sprite instance layout, UV and camera
+  math — is unit-tested without a GPU or a window.
 - Dependencies are pinned in the workspace manifest and the lockfile is
   committed. Adding a dependency requires a reason in the pull request; the
   engine's value is partly in what it does not pull in.

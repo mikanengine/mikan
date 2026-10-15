@@ -36,7 +36,8 @@ the demo, including the headless smoke test where a display is unavailable:
 ```bash
 xvfb-run -a cargo run -p demo2d --release -- --frames 120 --capture artifacts/frame.ppm --stats
 python3 scripts/verify_capture.py artifacts/frame.ppm
-xvfb-run -a bash scripts/verify_input.sh   # injects real key events (needs xdotool)
+xvfb-run -a bash scripts/verify_input.sh    # injects real key events (needs xdotool)
+xvfb-run -a bash scripts/verify_camera.sh   # follow camera and zoom (needs xdotool)
 ```
 
 `./scripts/verify.sh` runs the gates and the headless checks in one command.

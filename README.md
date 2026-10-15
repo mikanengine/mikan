@@ -8,8 +8,9 @@ Mikan 蜜柑 — a small, modular game engine. 2D first, then 3D. Rust at the co
 ## What works today
 
 This is an early but real vertical slice: a windowed application that renders at
-vsync, reads the keyboard, runs a fixed-timestep simulation, handles resize and
-every recoverable swap-chain condition, and exits cleanly.
+vsync, draws flat or textured sprites through a minimal 2D camera, reads the
+keyboard, runs a fixed-timestep simulation, handles resize and every recoverable
+swap-chain condition, and exits cleanly.
 
 | Capability | State |
 | --- | --- |
@@ -18,9 +19,11 @@ every recoverable swap-chain condition, and exits cleanly.
 | Keyboard/mouse state with press/release edges | implemented, unit-tested |
 | Clamped frame timing | implemented, unit-tested |
 | `wgpu` device/surface management, resize, surface recovery | implemented, runtime-verified |
-| Clear color + flat colored quads (one instanced draw call) | implemented, runtime-verified |
+| Clear color + sprites (flat or textured, one instanced draw call per texture run) | implemented, runtime-verified |
+| Textures uploaded from linear RGBA8 data, atlas UV rectangles | implemented, runtime-verified |
+| Minimal 2D camera (position + zoom, follow or pixel space) | implemented, runtime-verified |
 | Offscreen frame capture (PPM) for tests and tooling | implemented, runtime-verified |
-| Sprites, textures, cameras, 3D, audio, physics, ECS | **not implemented** — see the roadmap |
+| 3D, audio, physics, ECS, asset loading | **not implemented** — see the roadmap |
 
 ## Quick start
 
@@ -30,8 +33,9 @@ cd mikan
 cargo run -p demo2d --release
 ```
 
-The demo opens a 960x600 window with a dark background, an orange square, and a
-blue marker in the corner.
+The demo opens a 960x600 window with a dark background, an orange textured
+square, and a blue marker in the corner. Both are tiles of a small atlas the
+demo generates in code; nothing is loaded from disk.
 
 | Input | Action |
 | --- | --- |
@@ -47,9 +51,9 @@ command reference, including headless smoke-test mode.
 ## Workspace layout
 
 ```
-crates/mikan-core       configuration, time, fixed timestep, logging, shared error types
+crates/mikan-core       configuration, time, fixed timestep, logging, 2D camera, shared types
 crates/mikan-platform   window lifecycle, input state, application runner (winit)
-crates/mikan-render     device and swap chain management, quads, capture (wgpu)
+crates/mikan-render     device and swap chain management, sprites and textures, capture (wgpu)
 games/demo2d            playable 2D demo built on the engine runtime
 docs/                   architecture, development guide, FFI policy, ADRs
 ```
@@ -73,11 +77,12 @@ provides. See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the reasoning.
 ## Engine crates
 
 - **`mikan-core`** — platform-independent fundamentals: `EngineConfig`, `Color`,
-  `Time`, `FixedTimestep`, `FrameOutcome`, logging initialization.
+  `Time`, `FixedTimestep`, `FrameOutcome`, `Camera2d`, logging initialization.
 - **`mikan-platform`** — the app lifecycle (`App`/`AppContext`), input snapshot
   (`InputState`), and the window runner. It owns the only windowing dependency.
 - **`mikan-render`** — `Renderer`: instance, adapter, device, queue, swap chain,
-  quad pipeline, and optional frame readback. It owns the only graphics dependency.
+  sprites and textures (atlas-ready UV rectangles), the camera matrix, and
+  optional frame readback. It owns the only graphics dependency.
 
 ## Documentation
 
@@ -93,17 +98,17 @@ provides. See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the reasoning.
 
 Next milestones, in order of intended value:
 
-1. Sprite and texture support with a minimal 2D camera (texture atlas groundwork).
-2. An engine facade crate (`mikan`) that wires platform and rendering together so
-   applications stop doing it by hand.
-3. ECS-lite: entity storage and systems with explicit scheduling.
-4. 2D collision detection and resolution.
-5. Asset loading and hot reload.
+1. An engine facade crate (`mikan`) that wires platform and rendering together
+   so applications stop doing it by hand.
+2. ECS-lite: entity storage and systems with explicit scheduling.
+3. 2D collision detection and resolution.
+4. Asset loading and hot reload.
+5. Runtime verification on Windows, macOS, and Wayland (ADR 0005).
 
 3D work, native C modules, and C++ integrations are deliberately out of scope
 until the 2D foundation is stable. Each of those needs a concrete justification
-before it is started; see [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) and
-ADR 0004.
+before it is started; see [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md), ADR
+0004, and ADR 0006 (the sprites/camera milestone records why it is Rust-only).
 
 ## Platform support
 
