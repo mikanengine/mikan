@@ -973,6 +973,7 @@ version = "0.1.0"
 dependencies = [
  "mikan-assets",
  "mikan-core",
+ "mikan-ecs",
  "mikan-platform",
  "mikan-render",
  "thiserror 2.0.21",
@@ -997,6 +998,13 @@ version = "0.1.0"
 dependencies = [
  "env_logger",
  "log",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "mikan-ecs"
+version = "0.1.0"
+dependencies = [
  "thiserror 2.0.21",
 ]
 
