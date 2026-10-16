@@ -14,8 +14,10 @@ workspace = true
 
 [dependencies]
 mikan-assets.workspace = true
+mikan-collision.workspace = true
 mikan-core.workspace = true
 mikan-ecs.workspace = true
 mikan-platform.workspace = true
 mikan-render.workspace = true
+mikan-script.workspace = true
 thiserror.workspace = true

@@ -20,6 +20,10 @@ pub const DEFAULT_ZOOM: f32 = 1.0;
 /// directory (the repository root).
 pub const DEFAULT_ASSETS_DIR: &str = "games/demo2d/assets";
 
+/// Gameplay script loaded when `--script` is not given, relative to the
+/// working directory (the repository root).
+pub const DEFAULT_SCRIPT: &str = "games/demo2d/scripts/player.luau";
+
 /// Sprites drawn by the stress scene when `--sprites` is not given.
 pub const DEFAULT_STRESS_SPRITES: u32 = 10_000;
 
@@ -110,6 +114,8 @@ pub struct Cli {
     pub vsync: bool,
     /// Directory holding `atlas.json`, `atlas.png`, and `star.png`.
     pub assets: PathBuf,
+    /// Luau gameplay script driving the player's movement.
+    pub script: PathBuf,
     /// Sprite count of the stress scene; `None` uses the default.
     pub sprites: Option<u32>,
 }
@@ -129,6 +135,7 @@ impl Default for Cli {
             size: None,
             vsync: true,
             assets: PathBuf::from(DEFAULT_ASSETS_DIR),
+            script: PathBuf::from(DEFAULT_SCRIPT),
             sprites: None,
         }
     }
@@ -192,6 +199,7 @@ impl Cli {
         let mut size: Option<[u32; 2]> = None;
         let mut no_vsync = false;
         let mut assets: Option<PathBuf> = None;
+        let mut script: Option<PathBuf> = None;
         let mut sprites: Option<u32> = None;
         let mut args = args.into_iter();
 
@@ -246,6 +254,15 @@ impl Cli {
                         return Err(CliError::DuplicateArgument(argument));
                     }
                     assets = Some(PathBuf::from(value));
+                }
+                "--script" => {
+                    let value = args
+                        .next()
+                        .ok_or(CliError::MissingValue(argument.clone()))?;
+                    if script.is_some() {
+                        return Err(CliError::DuplicateArgument(argument));
+                    }
+                    script = Some(PathBuf::from(value));
                 }
                 "--timeout" => {
                     let value = args
@@ -382,6 +399,7 @@ impl Cli {
         cli.size = size;
         cli.vsync = !no_vsync;
         cli.assets = assets.unwrap_or_else(|| PathBuf::from(DEFAULT_ASSETS_DIR));
+        cli.script = script.unwrap_or_else(|| PathBuf::from(DEFAULT_SCRIPT));
         if sprites.is_some() && cli.scene != Scene::Stress {
             return Err(CliError::SpritesWithoutStress);
         }
@@ -419,6 +437,7 @@ OPTIONS:
     --scene <NAME>        classic (default), showcase, or stress
     --sampler <MODE>      Force linear or nearest sampling scene-wide
     --assets <DIR>        Asset directory (default games/demo2d/assets)
+    --script <PATH>       Luau gameplay script (default games/demo2d/scripts/player.luau)
     --size <WxH>          Window size in pixels (default 960x600)
     --camera <MODE>       Camera to render through: none (default) or follow
     --zoom <FACTOR>       Pixels per world unit when a camera is active (default 1)
@@ -476,6 +495,7 @@ mod tests {
         assert_eq!(cli.size, None);
         assert!(cli.vsync);
         assert_eq!(cli.assets, PathBuf::from(DEFAULT_ASSETS_DIR));
+        assert_eq!(cli.script, PathBuf::from(DEFAULT_SCRIPT));
         assert_eq!(cli.stress_sprites(), DEFAULT_STRESS_SPRITES);
     }
 
@@ -712,6 +732,14 @@ mod tests {
         assert_eq!(
             parse(&["--assets", "a", "--assets", "b"]),
             Err(CliError::DuplicateArgument("--assets".to_string()))
+        );
+        assert_eq!(
+            parse(&["--script", "a.luau", "--script", "b.luau"]),
+            Err(CliError::DuplicateArgument("--script".to_string()))
+        );
+        assert_eq!(
+            parse(&["--script"]),
+            Err(CliError::MissingValue("--script".to_string()))
         );
         assert_eq!(
             parse(&["--sprites"]),

@@ -156,8 +156,8 @@ candidate for the next increment of the crate.
 ## Resources
 
 ```rust
-world.insert_resource(MoveDirection([1.0, 0.0]));   // returns the previous value
-let direction = world.get_resource::<MoveDirection>().map(|d| d.0);
+world.insert_resource(Controls { direction: [1.0, 0.0], speed: 420.0 }); // returns the previous value
+let speed = world.get_resource::<Controls>().map(|c| c.speed);
 *world.get_resource_mut::<Score>().unwrap() += 10;
 world.remove_resource::<Score>();
 ```
@@ -165,9 +165,9 @@ world.remove_resource::<Score>();
 Resources exist for the state a step needs but no entity owns. The established
 pattern, used by the demo, is:
 
-1. The application reads the outside world (input, viewport size) *before* the
-   schedule runs.
-2. It writes that state into resources (`MoveDirection`, `WorldBounds`).
+1. The application reads the outside world (input, the gameplay script's
+   decision, viewport size) *before* the schedule runs.
+2. It writes that state into resources (`Controls`, `WorldBounds`).
 3. Systems read resources and component storages and know nothing about the
    window, the input API, or the renderer — which is what keeps them
    unit-testable.
@@ -181,10 +181,10 @@ returns early instead.
 
 ```rust
 let mut schedule = Schedule::new();
-schedule.add("snapshot", ...).add("input", ...).add("movement", ...).add("clamp", ...);
+schedule.add("snapshot", ...).add("input", ...).add("movement", ...).add("collide", ...).add("clamp", ...);
 
 schedule.run(&mut world, dt);      // every system once, in this order, with this dt
-schedule.names();                  // ["snapshot", "input", "movement", "clamp"]
+schedule.names();                  // ["snapshot", "input", "movement", "collide", "clamp"]
 ```
 
 - The order systems were added in **is** the order they run. There is no
@@ -255,5 +255,9 @@ The limits, stated rather than implied:
 ## What this is not
 
 - Not a general-purpose ECS, and not a scripting layer.
-- Not physics, collision, or spatial querying — the roadmap's next milestone.
+- Not physics or spatial querying. Collision is its own layer (`mikan-collision`
+  for the math, the demo's `collide` system for applying contacts; the guide is
+  [`collision.md`](collision.md)) and the gameplay script is `mikan-script`
+  ([`scripting.md`](scripting.md)) — the ECS stores components and runs systems,
+  it does not resolve contacts or interpret Lua.
 - Not a second scheduler: the fixed timestep stays where it already lives.

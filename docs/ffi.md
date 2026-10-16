@@ -5,18 +5,34 @@ code is allowed to enter the repository, how it must be structured, and what
 "done" means for such a module. It also states, unambiguously, what native code
 exists today.
 
-## Current status: none
+## Current status: two native modules
 
-There are **no C or C++ modules, no `build.rs` steps that invoke a C compiler,
-no `-sys` crates, and no `extern "C"` declarations** in this repository. The only
-`unsafe` in the dependency graph belongs to third-party crates (`wgpu`, `winit`,
-and their dependencies); the workspace forbids `unsafe_code` crate-wide, so first
-party code cannot add any without changing a lint.
+Native code entered the repository in Phase 5, by explicit owner-directed
+architecture decision (ADR 0010, ADR 0011) rather than silently:
 
-The C and C++ toolchain is therefore not required to build, test, or run Mikan
-today. The `crates/` directory contains only Rust.
+1. **`crates/mikan-collision-sys` (C99)** — the collision narrow-phase kernel:
+   one batch function, `mikan_contacts`, over plain `#[repr(C)]` data, with a
+   safe wrapper (`crates/mikan-collision`), warnings-as-errors on its own
+   sources, cross-check tests against an independent Rust implementation, and
+   a recorded Valgrind run (`docs/STATUS.md`). It was **not** adopted on
+   performance grounds: it measures at parity with the Rust reference and no
+   speedup is claimed. ADR 0010 supersedes ADR 0004 *for this module only*.
+2. **The vendored Luau VM (C++)** — `mlua`'s `luau` + `vendored` features
+   compile the pinned upstream Luau sources with the system C++ compiler when
+   `mikan-script` is built (ADR 0011). It is third-party code consumed
+   through `mlua`; Mikan writes no C++ glue, and the rules below apply to
+   Mikan's own sources, not to upstream code compiled by its own build
+   system.
 
-## Why C and C++ are deferred
+Consequently, **a C compiler and a C++ compiler are now build prerequisites**
+on every platform, documented in `docs/DEVELOPMENT.md`. The workspace still
+forbids `unsafe_code` crate-wide; the single exception is
+`mikan-collision-sys`, whose crate root records the override and its reason.
+
+The C first-party surface is exactly one function; the C++ surface is the
+vendored VM. Nothing else links native code.
+
+## Why C and C++ were deferred, and what changed
 
 Using a second and third language has real costs that must be paid repeatedly,
 not once:
@@ -34,6 +50,16 @@ acceptable cost. "It is faster in C++" is not sufficient on its own — the
 measurement must be shown, and the same measurement must be repeated after the
 module changes. ADR 0004 records this decision and the criteria below.
 
+What changed in Phase 5: the project owner directed that Mikan's stated
+architecture — Rust + C++ forming the engine core, C as the low-level
+foundation — is a requirement, not a long-term intention. ADR 0010 (the C
+collision kernel) and ADR 0011 (the vendored C++ Luau VM) record how that
+directive is honored. The policy below remains in force for every module
+proposed **on performance grounds**; a module introduced by an architecture
+decision instead must say so in its own ADR, report its measurements as
+measured (parity is a legitimate result, stated as parity), and meet every
+other criterion here unchanged.
+
 ## Criteria for introducing a native module
 
 A native module is considered only when **all** of the following hold:
@@ -47,7 +73,11 @@ A native module is considered only when **all** of the following hold:
    exceptions, templates, or STL types crossing the boundary.
 3. **It is measured.** The Rust implementation exists first and its performance
    is recorded; the native replacement must beat it by a margin that justifies
-   the costs above, using the benchmark protocol in `DEVELOPMENT.md`.
+   the costs above, using the benchmark protocol in `DEVELOPMENT.md`. This
+   criterion binds every module proposed on performance grounds; the only way
+   past it is an explicit ADR stating that the driver is architectural, what
+   the honest measured result is, and that no speedup is claimed — ADR 0010 is
+   the existing example.
 4. **It is isolated.** The module lives in its own crate (for example
    `crates/mikan-<name>-sys`) that nothing imports directly except a safe wrapper.
 5. **It is tested on its own.** The module has tests exercising the C/C++ code
@@ -89,9 +119,14 @@ A native module is considered only when **all** of the following hold:
 - **C++** requires a specific reason: an existing library that must be consumed
   on its own terms, or a workload where C++ abstractions measurably matter. Even
   then, only `extern "C"` entry points may cross the boundary; the C++ layer must
-  not own control flow that Rust depends on.
+  not own control flow that Rust depends on. The vendored Luau VM is exactly the
+  "existing library consumed on its own terms" case: Mikan does not write the
+  C++, it compiles pinned upstream sources through `mlua` and never links
+  against an ambient Lua installation.
 - **Both** must build with warnings-as-errors for the module's own sources and
-  must not require exceptions or RTTI for C++.
+  must not require exceptions or RTTI for C++. Vendored third-party sources are
+  compiled by their own build system under their own flags; the rule binds the
+  code Mikan owns.
 
 ## What a native module must never do
 
@@ -118,4 +153,7 @@ A native module is "done" only when the following are all true:
   the command and result recorded in `docs/STATUS.md`;
 - `docs/ARCHITECTURE.md` describes where the module sits in the dependency graph.
 
-Until all of that holds, the module does not exist in this repository.
+A module that cannot show all of this does not belong in this repository. The
+first first-party module has walked the whole path and its records can be used
+as the worked example: design in `docs/collision.md`, decision in ADR 0010,
+benchmark and Valgrind results in `docs/STATUS.md`.

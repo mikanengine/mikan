@@ -16,8 +16,8 @@
 //! window lifecycle remain in [`mikan_platform`], driven by the same runner an
 //! application can still use directly through [`mikan_platform::App`]; the
 //! engine crates stay reachable as [`mikan_core`], [`mikan_platform`],
-//! [`mikan_render`], [`mikan_assets`], and [`mikan_ecs`] for anything this
-//! crate does not re-export.
+//! [`mikan_render`], [`mikan_assets`], [`mikan_ecs`], [`mikan_collision`], and
+//! [`mikan_script`] for anything this crate does not re-export.
 //!
 //! # Example
 //!
@@ -79,15 +79,18 @@ pub use crate::runner::run;
 // The layers stay reachable for anything the curated re-exports below do not
 // cover.
 pub use mikan_assets;
+pub use mikan_collision;
 pub use mikan_core;
 pub use mikan_ecs;
 pub use mikan_platform;
 pub use mikan_render;
+pub use mikan_script;
 
 // Curated re-exports so that an application needs no other dependency: the
 // vocabulary of a frame, the platform context, asset loading, entity storage,
-// and the renderer entry points.
+// collision queries, gameplay scripting, and the renderer entry points.
 pub use mikan_assets::{Image, ImageError, SheetError, SheetFrame, SpriteSheet};
+pub use mikan_collision::{Aabb, Broadphase, Contact, Pair, contacts};
 pub use mikan_core::{Camera2d, Color, EngineConfig, FrameOutcome, Time, init_logging};
 pub use mikan_ecs::{DeadEntity, Entity, Schedule, World};
 pub use mikan_platform::{
@@ -97,3 +100,4 @@ pub use mikan_render::{
     CaptureBuffer, Frame, FrameStats, RenderError, RenderSettings, Renderer, SamplerMode, Sprite,
     Texture, TextureDescriptor, TextureEncoding, UvRect,
 };
+pub use mikan_script::{ScriptEngine, ScriptError, StepInput, StepOutput};

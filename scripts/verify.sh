@@ -45,8 +45,14 @@ if command -v xvfb-run >/dev/null 2>&1; then
 
         echo "==> ecs verification: player entity, scheduled systems, fixed steps"
         RUST_LOG="${RUST_LOG:-info}" xvfb-run -a bash scripts/verify_ecs.sh
+
+        echo "==> collision verification: blocks, collide system, diagonal resolution"
+        RUST_LOG="${RUST_LOG:-info}" xvfb-run -a bash scripts/verify_collision.sh
+
+        echo "==> scripting verification: Luau drives movement; failure paths behave"
+        RUST_LOG="${RUST_LOG:-info}" xvfb-run -a bash scripts/verify_script.sh
     else
-        echo "==> skipping the input, camera, and ecs verification: xdotool is not installed"
+        echo "==> skipping the input, camera, ecs, collision, and scripting verification: xdotool is not installed"
     fi
 
     echo "==> showcase verification: rotation, tint, alpha, samplers, PNG alpha"

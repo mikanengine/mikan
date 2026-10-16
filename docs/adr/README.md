@@ -15,6 +15,8 @@ the ones that are inconvenient.
 | [0007](0007-engine-facade.md) | An engine facade crate for application composition | Accepted |
 | [0008](0008-2d-sprite-rendering-system.md) | PNG assets, sprite-sheet metadata, and a pixel-perfect 2D view; no native module in this milestone | Accepted |
 | [0009](0009-ecs-lite.md) | ECS-lite: generational entities, sparse-set components, and scheduled systems; no native module in this milestone | Accepted |
+| [0010](0010-2d-collision-and-a-c-kernel.md) | 2D collision detection and resolution, with the narrow-phase kernel in C | Accepted |
+| [0011](0011-luau-gameplay-scripting.md) | Gameplay scripting with embedded Luau (vendored C++ VM) | Accepted |
 
 A decision is superseded by adding a new ADR that states what it replaces; the
 old record is not rewritten.

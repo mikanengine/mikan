@@ -9,6 +9,12 @@ How to build, test, run, and verify Mikan on your machine.
 - **Rust**: install with [rustup](https://rustup.rs). The toolchain version and
   components (rustfmt, clippy) are pinned in `rust-toolchain.toml`; rustup
   installs them automatically on the first `cargo` invocation in this repository.
+- **A C compiler and a C++ compiler.** The collision kernel is C99
+  (`crates/mikan-collision-sys`) and the vendored Luau VM is C++
+  (`crates/mikan-script`), both compiled as part of `cargo build`. On Debian
+  and Ubuntu, `sudo apt-get install -y build-essential` (or `gcc g++`)
+  covers it; on macOS, the Xcode Command Line Tools; on Windows, the MSVC
+  Build Tools that a normal Rust install already uses.
 - **A Vulkan, Metal, DirectX 12, or OpenGL ES capable GPU.**
   `wgpu` falls back through available backends automatically. If your machine has
   no hardware support, a software rasterizer also works (see below).
@@ -102,6 +108,19 @@ WxH` derives the largest integer zoom at which a WxH virtual screen fits the
 window (4x for 240x150 in the default 960x600 window) and snaps the camera to
 the physical pixel grid; its exact contract is documented in ADR 0008.
 
+The classic player's movement decisions come from a Luau gameplay script, loaded
+through `mikan-script`:
+
+```bash
+cargo run -p demo2d --release                                        # the default script
+cargo run -p demo2d --release -- --script games/demo2d/scripts/player.luau
+cargo run -p demo2d --release -- --script /path/to/my_player.luau    # your own
+```
+
+The script's step contract (arguments, return values, validation, failure
+behavior) and the sandbox are documented in [`scripting.md`](scripting.md); the
+decision record is ADR 0011.
+
 ## Quality gates
 
 Run these before pushing; CI runs the same set and fails on any deviation.
@@ -121,9 +140,9 @@ Or run all of them, plus the headless runtime checks, with one command:
 ```
 
 The script also runs the generator check and the headless smoke test, capture,
-input, camera, ecs, showcase, stress, pixel-perfect, and asset verification
-below when `xvfb-run` is available, and skips the display-dependent ones with a
-notice when it is not.
+input, camera, ecs, collision, scripting, showcase, stress, pixel-perfect, and
+asset verification below when `xvfb-run` is available, and skips the
+display-dependent ones with a notice when it is not.
 
 Logging is controlled with the standard `RUST_LOG` environment variable:
 
@@ -241,8 +260,9 @@ fixed step; `scripts/verify_ecs.sh` checks that the schedule is what moved it:
 xvfb-run -a bash scripts/verify_ecs.sh
 ```
 
-It requires the startup log to list one entity, its four components, and the
-system order `snapshot, input, movement, clamp`; then holds `D` and requires
+It requires the startup log to list the world (four entities — the player and
+the three collision blocks — eleven components, and the system order
+`snapshot, input, movement, collide, clamp`); then holds `D` and requires
 the shutdown log's moved-step counter and final position to agree exactly:
 every moved step advanced 3.5 px (420 px/s divided by the 120 Hz fixed step)
 from the start centre, until the right wall clamps the player (the step that
@@ -251,6 +271,44 @@ do not). Finally it runs with no input at all and requires the counter to stay
 at zero and the square to sit at the start centre. That is what "systems are
 scheduled on the fixed timestep, exactly once per step" means as an observable
 fact. The guide for the layer itself is [`ecs.md`](ecs.md).
+
+### Verifying collision
+
+```bash
+xvfb-run -a bash scripts/verify_collision.sh
+```
+
+The classic scene has three static collision blocks; the player is a collider
+too, and the `collide` system resolves overlaps once per fixed step. The script
+requires the startup log to report the blocks and the broad-phase grid, then
+holds down+right and requires the diagonal run to stop *against the first
+pillar's left face* (x = 582) and slide down it to the floor clamp (y = 552):
+passing through the block, stopping at first contact, or being ejected along
+the wrong axis all fail. A straight run along y = 300 afterwards must be
+unobstructed, which guards the corridor the input and camera verifications
+walk along. The layer guide is [`collision.md`](collision.md); the decision
+record (including the C kernel's boundary and the honest parity result) is
+ADR 0010.
+
+### Verifying gameplay scripting
+
+```bash
+xvfb-run -a bash scripts/verify_script.sh
+```
+
+The demo's movement now *is* the script, so the check starts by proving that:
+the startup log must name the loaded script, and holding `D` must move exactly
+3.5 px per moved fixed step — the same numbers the Rust implementation
+produced before the move to Luau. It then loads a fixture script that returns
+`(3, 4, 60)` for exactly 60 steps and requires the player to trace the
+*normalized* `(0.6, 0.8)` path to `[498, 324]` (an unnormalized engine would
+end at `[570, 420]`; a broken step counter would clamp at `[912, 552]` —
+all four outcomes are distinguishable). Finally every documented failure path
+is exercised: a syntax error, a missing `mikan_step`, and a missing file must
+each fail startup with a clear message and a non-zero exit; a runtime error and
+a non-finite return must each be logged exactly once, move nothing, and leave
+the game running. The guide is [`scripting.md`](scripting.md); the decision
+record is ADR 0011.
 
 ### Verifying the showcase scene
 
@@ -310,6 +368,22 @@ directory, a sheet whose texture is not a PNG, and a sheet without the
 ("could not read", "could not decode PNG data", `has no frame "player"`)
 instead of rendering a broken frame.
 
+### Benchmarking the collision kernel
+
+```bash
+bash scripts/bench_collision.sh               # 512 boxes / 250,000 candidate pairs
+PAIRS=100000 bash scripts/bench_collision.sh  # a different pair load
+```
+
+Runs the same candidate pairs through the C narrow-phase kernel
+(`mikan-collision-sys`) and the Rust reference implementation
+(`mikan_collision::reference`) in release, records each run's ns/pair under
+`artifacts/bench/`, and prints both. The recorded result is **parity within
+run-to-run noise** — one run favors C, the next favors Rust — and no speedup is
+claimed; see `docs/STATUS.md` for the numbers and ADR 0010 for why the kernel
+exists anyway. The Rust reference doubles as the test oracle, so this
+benchmark compares two implementations that provably agree.
+
 ### Benchmarking the sprite pipeline
 
 ```bash
@@ -352,7 +426,10 @@ it applied to this one.
 - Every public item has a doc comment; `missing_docs` is a warning and CI treats
   warnings as errors.
 - `unsafe_code` is forbidden workspace-wide. This is a deliberate constraint:
-  if a change needs `unsafe`, it needs an accepted ADR first.
+  if a change needs `unsafe`, it needs an accepted ADR first. The single
+  exception is `crates/mikan-collision-sys`, the C ABI boundary recorded in
+  ADR 0010 and in that crate's root; its safe wrapper and every consumer
+  contain none.
 - Tests live next to the code they test (`#[cfg(test)] mod tests`). Pure logic —
   timing, input edges, image encoding, sprite instance layout, UV and camera
   math — is unit-tested without a GPU or a window.

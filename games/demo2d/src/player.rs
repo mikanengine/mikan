@@ -1,23 +1,28 @@
 //! The classic scene's player: components, resources, and systems.
 //!
-//! The player is an ordinary entity. Its schedule runs four named systems,
+//! The player is an ordinary entity. Its schedule runs five named systems,
 //! once per fixed step, in exactly this order:
 //!
 //! 1. `snapshot` — copies [`Position`] into [`PreviousPosition`] so rendering
 //!    can interpolate between the last two fixed states.
-//! 2. `input` — writes this step's direction into [`Motion`].
+//! 2. `input` — copies this step's [`Controls`] into [`Motion`] (the controls
+//!    come from the gameplay script; see `mikan-script` and ADR 0011).
 //! 3. `movement` — integrates [`Motion`] into [`Position`].
-//! 4. `clamp` — keeps the player inside [`WorldBounds`].
+//! 4. `collide` — resolves [`Collider`] overlaps against the static blocks
+//!    (the system lives in [`crate::blocks`]).
+//! 5. `clamp` — keeps the player inside [`WorldBounds`].
 //!
 //! The order is the schedule: it is stated once, in [`schedule`], and the list
 //! above documents it. Step 1 must precede step 3 (or interpolation would
-//! blend the current position with itself), and step 4 must follow step 3 (or
-//! the player could leave the world for one step).
+//! blend the current position with itself), step 4 must follow step 3 (or the
+//! player could end a step inside a block), and step 5 must follow step 4 (or
+//! a resolution could push the player out of the world).
 //!
-//! The external state of a step — the direction the keys ask for and the world
-//! bounds — travels through resources. The game writes them before the
-//! schedule runs; the systems read them and know nothing about the window, the
-//! input API, or the renderer, which is what keeps them unit-testable.
+//! The external state of a step — the controls the script asks for and the
+//! world bounds — travels through resources. The game writes them before the
+//! schedule runs; the systems read them and know nothing about the window,
+//! the input API, the script VM, or the renderer, which is what keeps them
+//! unit-testable.
 
 use mikan::{DeadEntity, Entity, Schedule, World};
 
@@ -49,9 +54,32 @@ pub struct Player {
     pub size: f32,
 }
 
-/// The direction the player is asked to move this step (a resource).
+/// The box an entity occupies for collision: centered on its [`Position`],
+/// `size` pixels wide and tall.
+///
+/// Every entity with a [`Position`] and a [`Collider`] takes part in the
+/// `collide` system ([`crate::blocks::collide_system`]). Entities that also
+/// carry [`Motion`] absorb the resolution, so the player is pushed clear of
+/// the blocks while the blocks themselves never move.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct MoveDirection(pub [f32; 2]);
+pub struct Collider {
+    /// Full width and height in pixels.
+    pub size: [f32; 2],
+}
+
+/// The controls the player is asked to use this step (a resource).
+///
+/// The demo writes this from the Luau gameplay script's decision every fixed
+/// step: the script owns intent, the systems own simulation (ADR 0011).
+/// `input` copies it into [`Motion`]; a missing resource makes the player
+/// idle.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Controls {
+    /// Direction of at most unit length; zero means "stay".
+    pub direction: [f32; 2],
+    /// Speed in pixels per second, applied as `speed * dt`.
+    pub speed: f32,
+}
 
 /// The size of the world region the player is kept inside (a resource).
 ///
@@ -84,10 +112,11 @@ pub fn spawn_player(
         },
     )?;
     world.insert(entity, Player { size })?;
+    world.insert(entity, Collider { size: [size, size] })?;
     Ok(entity)
 }
 
-/// Builds the player's schedule: snapshot, input, movement, clamp.
+/// Builds the player's schedule: snapshot, input, movement, collide, clamp.
 #[must_use]
 pub fn schedule() -> Schedule {
     let mut schedule = Schedule::new();
@@ -98,11 +127,15 @@ pub fn schedule() -> Schedule {
             }
         })
         .add("input", |world, _dt| {
-            let direction = world
-                .get_resource::<MoveDirection>()
-                .map_or([0.0, 0.0], |direction| direction.0);
+            let controls = world.get_resource::<Controls>().copied();
             for (_, motion) in world.iter_mut::<Motion>() {
-                motion.direction = direction;
+                match controls {
+                    Some(controls) => {
+                        motion.direction = controls.direction;
+                        motion.speed = controls.speed;
+                    }
+                    None => motion.direction = [0.0, 0.0],
+                }
             }
         })
         .add("movement", |world, dt| {
@@ -115,6 +148,7 @@ pub fn schedule() -> Schedule {
                 position.0[1] += motion.direction[1] * distance;
             }
         })
+        .add("collide", crate::blocks::collide_system())
         .add("clamp", |world, _dt| {
             // Copy the bounds out first: holding a resource borrow across the
             // iteration below would borrow the world twice.
@@ -154,24 +188,6 @@ pub fn interpolated_position(previous: [f32; 2], position: [f32; 2], alpha: f32)
     ]
 }
 
-/// Converts four "is this key held" flags into a direction of at most unit
-/// length.
-///
-/// Ordering is `(left, right, up, down)`, matching the screen's y-down axis.
-/// Normalizing keeps diagonal movement from being faster than axis-aligned
-/// movement.
-#[must_use]
-pub fn direction_from_keys(axes: (bool, bool, bool, bool)) -> [f32; 2] {
-    let (left, right, up, down) = axes;
-    let x = f32::from(right) - f32::from(left);
-    let y = f32::from(down) - f32::from(up);
-    if x == 0.0 && y == 0.0 {
-        return [0.0, 0.0];
-    }
-    let length = (x * x + y * y).sqrt();
-    [x / length, y / length]
-}
-
 /// Keeps a center coordinate inside a world that is `extent` pixels wide.
 ///
 /// A world smaller than the object collapses the object to the center
@@ -201,29 +217,38 @@ mod tests {
     fn fixture(position: [f32; 2], size: f32, speed: f32) -> (World, Entity, Schedule) {
         let mut world = World::new();
         world.insert_resource(WorldBounds(VIEWPORT));
-        world.insert_resource(MoveDirection([0.0, 0.0]));
+        world.insert_resource(Controls {
+            direction: [0.0, 0.0],
+            speed: 0.0,
+        });
         let player =
             spawn_player(&mut world, position, size, speed).expect("a fresh entity is alive");
         (world, player, schedule())
     }
 
-    /// Writes the direction resource and runs one fixed step.
-    fn step(world: &mut World, schedule: &mut Schedule, direction: [f32; 2], dt: Duration) {
-        world.insert_resource(MoveDirection(direction));
+    /// Writes the controls resource and runs one fixed step at `speed`.
+    fn step(
+        world: &mut World,
+        schedule: &mut Schedule,
+        direction: [f32; 2],
+        speed: f32,
+        dt: Duration,
+    ) {
+        world.insert_resource(Controls { direction, speed });
         schedule.run(world, dt);
     }
 
     #[test]
     fn movement_uses_delta_time() {
         let (mut world, player, mut schedule) = fixture([400.0, 300.0], 64.0, 100.0);
-        step(&mut world, &mut schedule, [1.0, 0.0], millis(500));
+        step(&mut world, &mut schedule, [1.0, 0.0], 100.0, millis(500));
         assert_eq!(
             world.get::<Position>(player).unwrap().0,
             [450.0, 300.0],
             "100 px/s * 0.5 s"
         );
 
-        step(&mut world, &mut schedule, [1.0, 0.0], millis(250));
+        step(&mut world, &mut schedule, [1.0, 0.0], 100.0, millis(250));
         assert_eq!(
             world.get::<Position>(player).unwrap().0,
             [475.0, 300.0],
@@ -234,7 +259,7 @@ mod tests {
     #[test]
     fn snapshot_runs_before_movement() {
         let (mut world, player, mut schedule) = fixture([400.0, 300.0], 64.0, 100.0);
-        step(&mut world, &mut schedule, [1.0, 0.0], millis(500));
+        step(&mut world, &mut schedule, [1.0, 0.0], 100.0, millis(500));
         assert_eq!(
             world.get::<PreviousPosition>(player).unwrap().0,
             [400.0, 300.0],
@@ -246,7 +271,7 @@ mod tests {
     #[test]
     fn a_player_without_input_does_not_move_at_all() {
         let (mut world, player, mut schedule) = fixture([400.0, 300.0], 64.0, 100.0);
-        step(&mut world, &mut schedule, [0.0, 0.0], millis(500));
+        step(&mut world, &mut schedule, [0.0, 0.0], 100.0, millis(500));
         assert_eq!(world.get::<Position>(player).unwrap().0, [400.0, 300.0]);
         assert_eq!(
             world.get::<PreviousPosition>(player).unwrap().0,
@@ -256,31 +281,41 @@ mod tests {
 
     #[test]
     fn diagonal_movement_is_not_faster() {
-        let direction = direction_from_keys((false, true, false, true));
-        let length = (direction[0] * direction[0] + direction[1] * direction[1]).sqrt();
-        assert!((length - 1.0).abs() < 1e-6, "direction is unit length");
-
+        // The script hands the engine a unit diagonal (the engine's own
+        // normalization is tested in mikan-script); the movement system must
+        // apply `speed * dt` along it like any other direction.
+        let direction = [core::f32::consts::FRAC_1_SQRT_2; 2];
         let (mut world, player, mut schedule) = fixture([400.0, 300.0], 64.0, 100.0);
-        step(&mut world, &mut schedule, direction, millis(1000));
+        step(&mut world, &mut schedule, direction, 100.0, millis(1000));
         let moved = &world.get::<Position>(player).unwrap().0;
         let distance = ((moved[0] - 400.0).powi(2) + (moved[1] - 300.0).powi(2)).sqrt();
         assert!((distance - 100.0).abs() < 1e-3, "moved {distance} px");
     }
 
     #[test]
-    fn opposite_keys_cancel_out() {
-        assert_eq!(direction_from_keys((true, true, true, true)), [0.0, 0.0]);
+    fn the_controls_speed_applies_instead_of_the_spawn_speed() {
+        let (mut world, player, mut schedule) = fixture([400.0, 300.0], 64.0, 100.0);
+        step(&mut world, &mut schedule, [1.0, 0.0], 250.0, millis(1000));
         assert_eq!(
-            direction_from_keys((false, false, false, false)),
-            [0.0, 0.0]
+            world.get::<Position>(player).unwrap().0,
+            [650.0, 300.0],
+            "250 px/s comes from the controls, not the 100 px/s spawn value"
         );
+    }
+
+    #[test]
+    fn a_missing_controls_resource_stops_the_player() {
+        let (mut world, player, mut schedule) = fixture([400.0, 300.0], 64.0, 100.0);
+        step(&mut world, &mut schedule, [1.0, 0.0], 100.0, millis(100));
+        let moved = world.get::<Position>(player).unwrap().0;
+        assert_ne!(moved, [400.0, 300.0], "it moved while controlled");
+
+        world.remove_resource::<Controls>();
+        schedule.run(&mut world, millis(1000));
         assert_eq!(
-            direction_from_keys((true, false, false, false)),
-            [-1.0, 0.0]
-        );
-        assert_eq!(
-            direction_from_keys((false, false, true, false)),
-            [0.0, -1.0]
+            world.get::<Position>(player).unwrap().0,
+            moved,
+            "without the resource the input system zeroes the direction"
         );
     }
 
@@ -288,14 +323,20 @@ mod tests {
     fn the_player_stays_inside_the_world_bounds() {
         let (mut world, player, mut schedule) = fixture([50.0, 50.0], 64.0, 1000.0);
         // Walk far past every edge; `clamp` runs after `movement` each step.
-        step(&mut world, &mut schedule, [-1.0, -1.0], millis(1000));
+        step(
+            &mut world,
+            &mut schedule,
+            [-1.0, -1.0],
+            1000.0,
+            millis(1000),
+        );
         assert_eq!(
             world.get::<Position>(player).unwrap().0,
             [32.0, 32.0],
             "clamped to the top-left"
         );
 
-        step(&mut world, &mut schedule, [1.0, 1.0], millis(1000));
+        step(&mut world, &mut schedule, [1.0, 1.0], 1000.0, millis(1000));
         assert_eq!(
             world.get::<Position>(player).unwrap().0,
             [768.0, 568.0],
@@ -307,7 +348,7 @@ mod tests {
     fn a_world_smaller_than_the_player_does_not_panic() {
         let (mut world, player, mut schedule) = fixture([10.0, 10.0], 64.0, 100.0);
         world.insert_resource(WorldBounds([32.0, 32.0]));
-        step(&mut world, &mut schedule, [1.0, 1.0], millis(100));
+        step(&mut world, &mut schedule, [1.0, 1.0], 100.0, millis(100));
         assert_eq!(world.get::<Position>(player).unwrap().0, [16.0, 16.0]);
     }
 
@@ -315,7 +356,7 @@ mod tests {
     fn a_missing_bounds_resource_disables_clamping_only() {
         let (mut world, player, mut schedule) = fixture([50.0, 50.0], 64.0, 1000.0);
         world.remove_resource::<WorldBounds>();
-        step(&mut world, &mut schedule, [-1.0, -1.0], millis(100));
+        step(&mut world, &mut schedule, [-1.0, -1.0], 1000.0, millis(100));
         assert_eq!(
             world.get::<Position>(player).unwrap().0,
             [-50.0, -50.0],
@@ -351,7 +392,7 @@ mod tests {
     #[test]
     fn rendering_never_moves_the_simulation() {
         let (mut world, player, mut schedule) = fixture([400.0, 300.0], 64.0, 100.0);
-        step(&mut world, &mut schedule, [1.0, 0.0], millis(100));
+        step(&mut world, &mut schedule, [1.0, 0.0], 100.0, millis(100));
         let before = world.get::<Position>(player).unwrap().0;
         for alpha in [0.0, 0.25, 0.5, 1.0] {
             let _ = render_pose(&world, player, alpha);
@@ -367,7 +408,7 @@ mod tests {
     #[test]
     fn render_pose_interpolates_between_the_two_states() {
         let (mut world, player, mut schedule) = fixture([400.0, 300.0], 64.0, 100.0);
-        step(&mut world, &mut schedule, [1.0, 0.0], millis(1000));
+        step(&mut world, &mut schedule, [1.0, 0.0], 100.0, millis(1000));
         let (center, size) = render_pose(&world, player, 0.0).unwrap();
         assert_eq!((center, size), ([400.0, 300.0], 64.0), "alpha 0: previous");
         let (center, size) = render_pose(&world, player, 1.0).unwrap();
@@ -382,6 +423,7 @@ mod tests {
         assert!(world.has::<PreviousPosition>(player));
         assert!(world.has::<Motion>(player));
         assert!(world.has::<Player>(player));
+        assert!(world.has::<Collider>(player));
         assert_eq!(world.entity_count(), 1);
         assert_eq!(world.component_count::<Position>(), 1);
     }
@@ -391,7 +433,7 @@ mod tests {
         let (mut world, player, mut schedule) = fixture([400.0, 300.0], 64.0, 100.0);
         let bystander = world.spawn();
         world.insert(bystander, Position([1.0, 1.0])).unwrap();
-        step(&mut world, &mut schedule, [1.0, 0.0], millis(1000));
+        step(&mut world, &mut schedule, [1.0, 0.0], 100.0, millis(1000));
 
         assert_eq!(
             world.get::<Position>(player).unwrap().0,
@@ -410,7 +452,7 @@ mod tests {
         let schedule = schedule();
         assert_eq!(
             schedule.names().collect::<Vec<_>>(),
-            ["snapshot", "input", "movement", "clamp"]
+            ["snapshot", "input", "movement", "collide", "clamp"]
         );
     }
 
@@ -430,7 +472,7 @@ mod tests {
         let run = || {
             let (mut world, player, mut schedule) = fixture([400.0, 300.0], 64.0, 420.0);
             for (direction, dt) in &steps {
-                step(&mut world, &mut schedule, *direction, *dt);
+                step(&mut world, &mut schedule, *direction, 420.0, *dt);
             }
             let position = world.get::<Position>(player).unwrap().0;
             let previous = world.get::<PreviousPosition>(player).unwrap().0;

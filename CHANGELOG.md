@@ -11,6 +11,64 @@ listed here.
 
 ### Added
 
+- `mikan-collision-sys` and `mikan-collision`: 2D collision. A uniform-grid
+  broad phase with deterministic (sorted, deduplicated) output; `Aabb`, `Pair`,
+  and `Contact` with documented semantics (overlap means `depth > 0`, touching
+  boxes are separated, the normal points first→second, non-finite coordinates
+  yield separated results order-independently); one safe batch call `contacts`
+  into the C99 narrow-phase kernel `mikan_contacts`; and `reference`, a Rust
+  implementation of the same math kept as the test oracle and the benchmark
+  baseline, cross-checked bit for bit (including a randomized 256-box case).
+  `mikan-collision-sys` is the one crate in the workspace allowed to use
+  `unsafe` (the ABI boundary), with the override and its reason recorded in the
+  crate root; `mikan-collision` and every consumer are safe Rust.
+- `scripts/bench_collision.sh`: runs the same 250,000 candidate pairs from 512
+  boxes through the C kernel and the Rust reference in release and records the
+  results under `artifacts/bench/`. The recorded outcome is parity within
+  run-to-run noise (one run favors C, the next favors Rust); no speedup is
+  claimed, and a Valgrind run of the benchmark binary reports zero errors and
+  zero bytes lost.
+- `mikan-script`: sandboxed Luau gameplay scripting. `ScriptEngine` loads a
+  script (from file or source) and calls its global `mikan_step(dt, left,
+  right, up, down, pos_x, pos_y)` once per fixed step, returning a direction
+  and a speed; the engine validates the result (finite in `f32`, non-negative
+  speed, directions longer than unit length normalized, deliberately shorter
+  ones left alone). The VM is built from vendored Luau sources through `mlua`
+  (`luau` + `vendored`; a C++ compiler is required to build), sandboxed with an
+  explicit safe library set, Luau's own sandbox mode, and a 64 MiB memory
+  limit. `ScriptError` (`Load`, `Compile`, `MissingFunction`, `Runtime`,
+  `InvalidReturn`, `Vm`) carries the script name and, where Luau provides it,
+  the line.
+- `mikan`: re-exports of `mikan_collision` and `mikan_script` with their
+  common types (`Aabb`, `Broadphase`, `Contact`, `Pair`, `ScriptEngine`,
+  `ScriptError`, `StepInput`, `StepOutput`).
+- `demo2d`: the classic scene gains three static collision blocks (one unit
+  test guards that none of them intrudes on the y = 300 corridor the input and
+  camera verifications walk), the player is a collider too, and a stateful
+  `collide` system rebuilds the broad phase and resolves contacts once per
+  fixed step — movable bodies (those with `Motion`) are pushed out half each
+  when both are movable, anything without `Motion` stays put. The schedule is
+  now `snapshot, input, movement, collide, clamp`, so collision runs after
+  integration and before the world-bounds clamp. Movement decisions come from
+  a Luau script: `--script PATH` (default `games/demo2d/scripts/player.luau`),
+  loaded at startup with load errors fatal, and run-time errors logged once
+  before the player idles for the step while the game keeps running.
+- Verification: `scripts/verify_collision.sh` (the startup log reports the
+  blocks and grid; a diagonal run stops against the first pillar's left face at
+  x = 582 and slides to the floor clamp at y = 552; the y = 300 corridor stays
+  unobstructed) and `scripts/verify_script.sh` (the default script reproduces
+  the documented 3.5 px per moved step; a `(3, 4, 60)` script for exactly 60
+  steps traces the normalized path to `[498, 324]`, distinguishable from the
+  unnormalized `[570, 420]`; syntax errors, a missing `mikan_step`, and a
+  missing file each fail startup with exit 1; a runtime error and a non-finite
+  return are each logged exactly once and move nothing). Both wired into
+  `scripts/verify.sh` and the CI smoke job.
+- Documentation: ADR 0010 (2D collision, the C kernel, its honest parity
+  measurement, and ADR 0004 superseded for this module only), ADR 0011 (Luau
+  gameplay scripting — an owner-directed roadmap amendment recorded as its own
+  decision, including the mlua pin, sandbox, and failure semantics),
+  `docs/collision.md`, `docs/scripting.md`, and refreshed README, ARCHITECTURE,
+  DEVELOPMENT, FFI policy, ECS guide, STATUS, and this changelog.
 - `mikan-ecs`: a CPU-only crate (depends on `thiserror` only, nothing from the
   workspace) providing `Entity` (generational handles, `Display` as
   `{index}v{generation}`, LIFO slot reuse, stale handles never resolve),
@@ -126,6 +184,18 @@ listed here.
 
 ### Changed
 
+- `demo2d`: the classic player's movement decisions now come from a Luau
+  script through `mikan-script` instead of Rust code, and the `MoveDirection`
+  resource became `Controls { direction, speed }` (the script returns a
+  direction and a speed; the systems are unchanged downstream). With the
+  default script the observable behavior — 420 px/s, unaccelerated diagonals —
+  is exactly what the Rust implementation produced.
+- Native code is no longer deferred in principle: `mikan-collision-sys`
+  compiles C99 sources with warnings-as-errors, and `mikan-script` compiles the
+  vendored C++ Luau VM, so a C and a C++ compiler are now build prerequisites.
+  ADR 0004 remains the policy baseline; ADR 0010 supersedes its measurement
+  criterion for the collision kernel only, with the parity result reported as
+  measured.
 - `demo2d`: the classic scene's player state and movement code moved from the
   `Square` struct into `mikan-ecs` components, resources, and systems; the
   fixed-step arithmetic and the rendered behavior are unchanged.

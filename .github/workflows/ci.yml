@@ -92,6 +92,12 @@ jobs:
       - name: Verify the ECS end to end
         run: xvfb-run -a bash scripts/verify_ecs.sh
 
+      - name: Verify collision end to end
+        run: xvfb-run -a bash scripts/verify_collision.sh
+
+      - name: Verify Luau gameplay scripting end to end
+        run: xvfb-run -a bash scripts/verify_script.sh
+
       - name: Verify the showcase scene end to end
         run: xvfb-run -a bash scripts/verify_showcase.sh
 

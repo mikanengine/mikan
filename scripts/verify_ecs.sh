@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 #
 # Verifies the ECS-lite milestone end to end: the classic scene's player is a
-# `mikan-ecs` entity, its four named systems run on the engine's fixed step,
+# `mikan-ecs` entity, its five named systems run on the engine's fixed step,
 # and movement advances exactly one fixed step at a time.
 #
 # Checks:
-#   1. The startup log reports one entity, its four components, and the system
-#      order (snapshot, input, movement, clamp).
+#   1. The startup log reports the four entities (the player and the three
+#      collision blocks), the eleven components, and the system order
+#      (snapshot, input, movement, collide, clamp).
 #   2. Holding D for ~0.5 s moves the player exactly 3.5 px per *moved* fixed
 #      step (420 px/s at the default 120 Hz). The shutdown log's moved-step
 #      counter and the final position must agree, which is what "scheduled on
@@ -44,7 +45,7 @@ trap cleanup_demo EXIT
 echo "==> the startup log must list the player entity and its systems"
 start_demo "$FRAME_BUDGET"
 LOG_FILE="$RUN_LOG"
-expect_log "ecs: 1 entity, 4 components, systems: snapshot, input, movement, clamp"
+expect_log "ecs: 4 entities, 11 components, systems: snapshot, input, movement, collide, clamp"
 
 echo "==> holding D for 0.5 s must move exactly 3.5 px per moved fixed step"
 xdotool keydown d
@@ -60,7 +61,7 @@ import re, sys
 log = open(sys.argv[1], encoding="utf-8", errors="replace").read()
 start_x, step_px, wall = float(sys.argv[2]), float(sys.argv[3]), float(sys.argv[4])
 square = re.search(r"square at \[(-?[\d.]+), (-?[\d.]+)\]", log)
-steps = re.search(r"ecs: 1 entity, (\d+) fixed steps, (\d+) moved steps", log)
+steps = re.search(r"ecs: 4 entities, (\d+) fixed steps, (\d+) moved steps", log)
 if not square:
     sys.exit("no final position in the demo log")
 if not steps:
@@ -95,7 +96,7 @@ DEMO_PID=$!
 wait "$DEMO_PID"
 LOG_FILE="$RUN_LOG"
 expect_log "square at \[480, 300\]"
-expect_log "ecs: 1 entity, [0-9]+ fixed steps, 0 moved steps"
+expect_log "ecs: 4 entities, [0-9]+ fixed steps, 0 moved steps"
 echo "    PASS: no input means no movement and no moved steps"
 
 echo

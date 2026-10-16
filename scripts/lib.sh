@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 #
 # Shared helpers for the X11 end-to-end verification scripts (verify_input.sh,
-# verify_camera.sh, verify_ecs.sh, verify_showcase.sh, verify_stress.sh,
-# verify_pixel_perfect.sh, verify_assets.sh). Sourced, not executed directly.
+# verify_camera.sh, verify_ecs.sh, verify_collision.sh, verify_script.sh,
+# verify_showcase.sh, verify_stress.sh, verify_pixel_perfect.sh,
+# verify_assets.sh). Sourced, not executed directly.
 #
 # The sourcing script must cd to the repository root, set DEMO_BIN and
 # TIMEOUT_SECS, then source this file, call check_environment, install
@@ -39,13 +40,20 @@ check_environment() {
 }
 
 # Asserts that $LOG_FILE matches an extended regex, printing the log on
-# failure. $LOG_FILE must be set by the caller before the run it describes.
+# failure. Polls for up to 5 s first: the startup facts (renderer, assets,
+# ECS) are logged a moment *after* the window appears, and the window is what
+# start_demo waits for. Post-shutdown expectations match immediately.
+# $LOG_FILE must be set by the caller before the run it describes.
 expect_log() {
-    if ! grep -qE "$1" "$LOG_FILE"; then
-        echo "error: the demo log does not match /$1/:" >&2
-        cat "$LOG_FILE" >&2
-        exit 1
-    fi
+    for _ in $(seq 1 50); do
+        if grep -qE "$1" "$LOG_FILE"; then
+            return 0
+        fi
+        sleep 0.1
+    done
+    echo "error: the demo log does not match /$1/:" >&2
+    cat "$LOG_FILE" >&2
+    exit 1
 }
 
 # Kills only the demo process this script started. Matching by command line

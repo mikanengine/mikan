@@ -5,7 +5,8 @@
 //! the renderer and forwards resizes, `mikan-platform` owns the window, input,
 //! and timing, and `mikan-render` draws. The classic scene's player is a
 //! `mikan-ecs` entity whose systems run once per fixed step (see
-//! [`crate::player`]).
+//! [`crate::player`]), and its movement decisions come from a Luau script
+//! loaded through `mikan-script` (the `--script` option; ADR 0011).
 //!
 //! Assets are real files loaded by `mikan-assets` at startup (see
 //! [`crate::assets`]); the sprite layouts are in [`crate::scene`].
@@ -13,16 +14,16 @@
 use std::time::Duration;
 
 use mikan::{
-    AppContext, Camera2d, CaptureBuffer, DeadEntity, Engine, Entity, Frame, FrameOutcome,
-    FrameStats, Game, KeyCode, PhysicalKey, RenderError, SamplerMode, Schedule, Sprite, World,
+    Camera2d, CaptureBuffer, DeadEntity, Engine, Entity, Frame, FrameOutcome, FrameStats, Game,
+    KeyCode, PhysicalKey, RenderError, SamplerMode, Schedule, ScriptEngine, ScriptError, Sprite,
+    StepInput, World,
 };
 use thiserror::Error;
 
 use crate::assets::{AssetError, Assets};
+use crate::blocks;
 use crate::cli::{CameraMode, Cli, Scene};
-use crate::player::{
-    Motion, MoveDirection, Player, Position, PreviousPosition, WorldBounds, direction_from_keys,
-};
+use crate::player::{Collider, Controls, Motion, Player, Position, PreviousPosition, WorldBounds};
 use crate::ppm;
 use crate::scene::{self, StressLayout};
 
@@ -44,6 +45,10 @@ pub enum DemoError {
     /// Spawning the player entity failed (a handle was not alive).
     #[error(transparent)]
     Ecs(#[from] DeadEntity),
+
+    /// The gameplay script could not be loaded or validated.
+    #[error(transparent)]
+    Script(#[from] ScriptError),
 
     /// The requested frames were not presented within the timeout.
     #[error(
@@ -75,6 +80,11 @@ pub struct Demo {
     schedule: Schedule,
     /// The player entity, spawned in [`Game::init`].
     player: Option<Entity>,
+    /// The gameplay script driving the player, loaded in [`Game::init`].
+    script: Option<ScriptEngine>,
+    /// A script step error has already been logged; later ones are suppressed
+    /// so a broken script cannot flood the log at 120 Hz.
+    script_error_reported: bool,
     /// Fixed steps run, and how many of them changed the player's position.
     /// Diagnostics for the shutdown log and the runtime verification.
     fixed_steps: u64,
@@ -104,6 +114,8 @@ impl Demo {
             world: World::new(),
             schedule: crate::player::schedule(),
             player: None,
+            script: None,
+            script_error_reported: false,
             fixed_steps: 0,
             moved_steps: 0,
             layout: None,
@@ -120,18 +132,6 @@ impl Demo {
     /// The sampler the scenes use unless they pin their own.
     fn sampler(&self) -> SamplerMode {
         self.cli.sampler.unwrap_or_default()
-    }
-
-    /// Current movement direction from the held keys.
-    fn direction(ctx: &AppContext<'_>) -> [f32; 2] {
-        let input = ctx.input();
-        let held = |key: KeyCode| input.is_key_pressed(PhysicalKey::Code(key));
-        direction_from_keys((
-            held(KeyCode::KeyA) || held(KeyCode::ArrowLeft),
-            held(KeyCode::KeyD) || held(KeyCode::ArrowRight),
-            held(KeyCode::KeyW) || held(KeyCode::ArrowUp),
-            held(KeyCode::KeyS) || held(KeyCode::ArrowDown),
-        ))
     }
 
     /// The world-space size of the visible region: what the camera shows.
@@ -166,7 +166,7 @@ impl Demo {
         match self.cli.scene {
             Scene::Classic => {
                 let (center, size) = self.player_pose(alpha);
-                scene::classic(assets, center, size, world, sampler).to_vec()
+                scene::classic(assets, center, size, world, sampler)
             }
             Scene::Showcase => scene::showcase(assets, sampler),
             Scene::Stress => {
@@ -341,7 +341,10 @@ impl Game for Demo {
         // region's middle, so the player is on screen in every mode.
         let view = self.world_view([width as f32, height as f32]);
         self.world.insert_resource(WorldBounds(view));
-        self.world.insert_resource(MoveDirection([0.0, 0.0]));
+        self.world.insert_resource(Controls {
+            direction: [0.0, 0.0],
+            speed: 0.0,
+        });
         let player = crate::player::spawn_player(
             &mut self.world,
             [view[0] * 0.5, view[1] * 0.5],
@@ -349,15 +352,25 @@ impl Game for Demo {
             scene::PLAYER_SPEED,
         )?;
         self.player = Some(player);
+        blocks::spawn_blocks(&mut self.world)?;
         log::info!(
-            "ecs: {} entity, {} components, systems: {}",
+            "ecs: {} entities, {} components, systems: {}",
             self.world.entity_count(),
             self.world.component_count::<Position>()
                 + self.world.component_count::<PreviousPosition>()
                 + self.world.component_count::<Motion>()
-                + self.world.component_count::<Player>(),
+                + self.world.component_count::<Player>()
+                + self.world.component_count::<Collider>(),
             self.schedule.names().collect::<Vec<_>>().join(", "),
         );
+        log::info!(
+            "collision: {} static blocks, grid cell {}",
+            blocks::CLASSIC_BLOCKS.len(),
+            blocks::GRID_CELL,
+        );
+        let script = ScriptEngine::from_file(&self.cli.script)?;
+        log::info!("script: {} (mikan_step)", self.cli.script.display());
+        self.script = Some(script);
         if self.cli.scene == Scene::Stress {
             let layout =
                 StressLayout::new(self.cli.stress_sprites(), [width as f32, height as f32]);
@@ -384,13 +397,59 @@ impl Game for Demo {
             return Ok(());
         }
 
-        let direction = Self::direction(engine.ctx());
+        // The step's external state, written before the systems run: the
+        // controls the gameplay script asks for and the region the player is
+        // kept in. The script sees the held keys, the step duration, and the
+        // player's position — never the world itself.
+        let (left, right, up, down) = {
+            let input = engine.ctx().input();
+            let held = |key: KeyCode| input.is_key_pressed(PhysicalKey::Code(key));
+            (
+                held(KeyCode::KeyA) || held(KeyCode::ArrowLeft),
+                held(KeyCode::KeyD) || held(KeyCode::ArrowRight),
+                held(KeyCode::KeyW) || held(KeyCode::ArrowUp),
+                held(KeyCode::KeyS) || held(KeyCode::ArrowDown),
+            )
+        };
+        let position = self
+            .player
+            .and_then(|entity| self.world.get::<Position>(entity))
+            .map_or([0.0, 0.0], |position| position.0);
+        let controls = match self.script.as_ref() {
+            Some(script) => match script.call_step(StepInput {
+                dt: dt.as_secs_f32(),
+                left,
+                right,
+                up,
+                down,
+                position,
+            }) {
+                Ok(output) => Controls {
+                    direction: output.direction,
+                    speed: output.speed,
+                },
+                // A gameplay bug must not kill the run: log the first error
+                // with its script and line, then idle for the step.
+                Err(error) => {
+                    if !self.script_error_reported {
+                        log::error!("script error: {error}");
+                        self.script_error_reported = true;
+                    }
+                    Controls {
+                        direction: [0.0, 0.0],
+                        speed: 0.0,
+                    }
+                }
+            },
+            None => Controls {
+                direction: [0.0, 0.0],
+                speed: 0.0,
+            },
+        };
         let (width, height) = engine.renderer().size();
         let view = self.world_view([width as f32, height as f32]);
 
-        // The step's external state, written before the systems run: the
-        // direction the keys ask for and the region the player is kept in.
-        self.world.insert_resource(MoveDirection(direction));
+        self.world.insert_resource(controls);
         self.world.insert_resource(WorldBounds(view));
 
         let before = self
@@ -497,7 +556,7 @@ impl Game for Demo {
             position[1]
         );
         log::info!(
-            "ecs: {} entity, {} fixed steps, {} moved steps",
+            "ecs: {} entities, {} fixed steps, {} moved steps",
             self.world.entity_count(),
             self.fixed_steps,
             self.moved_steps,

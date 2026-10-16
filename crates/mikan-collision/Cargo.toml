@@ -1,0 +1,16 @@
+[package]
+name = "mikan-collision"
+description = "Mikan's 2D collision: AABB geometry, a uniform-grid broad phase, and the safe face of the C narrow-phase kernel."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+mikan-collision-sys.workspace = true

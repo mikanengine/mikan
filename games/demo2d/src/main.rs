@@ -5,6 +5,7 @@
 //! `games/demo2d/assets` at startup. See `--help` for the smoke-test options.
 
 mod assets;
+mod blocks;
 mod cli;
 mod demo;
 mod player;
