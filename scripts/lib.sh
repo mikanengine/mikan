@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 #
 # Shared helpers for the X11 end-to-end verification scripts (verify_input.sh,
-# verify_camera.sh). Sourced, not executed directly.
+# verify_camera.sh, verify_showcase.sh, verify_stress.sh,
+# verify_pixel_perfect.sh, verify_assets.sh). Sourced, not executed directly.
 #
 # The sourcing script must cd to the repository root, set DEMO_BIN and
 # TIMEOUT_SECS, then source this file, call check_environment, install
@@ -10,6 +11,20 @@
 RUN_LOG=""
 WINDOW_ID=""
 DEMO_PID=""
+LOG_FILE=""
+
+# Verifies a display and the demo binary. Scripts that need no synthetic input
+# only need this much.
+check_demo_environment() {
+    [ -n "${DISPLAY:-}" ] || {
+        echo "error: no DISPLAY; run under xvfb-run -a or on a desktop session" >&2
+        exit 2
+    }
+    [ -x "$DEMO_BIN" ] || {
+        echo "error: $DEMO_BIN not found; run cargo build --release -p demo2d" >&2
+        exit 2
+    }
+}
 
 # Verifies the required tools, a display, and the demo binary.
 check_environment() {
@@ -19,15 +34,18 @@ check_environment() {
             exit 2
         }
     done
-    [ -n "${DISPLAY:-}" ] || {
-        echo "error: no DISPLAY; run under xvfb-run -a or on a desktop session" >&2
-        exit 2
-    }
-    [ -x "$DEMO_BIN" ] || {
-        echo "error: $DEMO_BIN not found; run cargo build --release -p demo2d" >&2
-        exit 2
-    }
+    check_demo_environment
     RUN_LOG="$(mktemp)"
+}
+
+# Asserts that $LOG_FILE matches an extended regex, printing the log on
+# failure. $LOG_FILE must be set by the caller before the run it describes.
+expect_log() {
+    if ! grep -qE "$1" "$LOG_FILE"; then
+        echo "error: the demo log does not match /$1/:" >&2
+        cat "$LOG_FILE" >&2
+        exit 1
+    fi
 }
 
 # Kills only the demo process this script started. Matching by command line

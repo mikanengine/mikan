@@ -46,6 +46,9 @@ jobs:
       - name: Build in release mode
         run: cargo build --workspace --release
 
+      - name: Check the generated assets
+        run: python3 scripts/generate_assets.py --check
+
   # Runs the real demo on a virtual display with a software Vulkan device,
   # presents a fixed number of frames, and verifies the captured image.
   # See docs/adr/0005-cross-platform-validation.md for what this does and does
@@ -85,6 +88,18 @@ jobs:
 
       - name: Verify the 2D camera end to end
         run: xvfb-run -a bash scripts/verify_camera.sh
+
+      - name: Verify the showcase scene end to end
+        run: xvfb-run -a bash scripts/verify_showcase.sh
+
+      - name: Verify stress-scene batching end to end
+        run: xvfb-run -a bash scripts/verify_stress.sh
+
+      - name: Verify pixel-perfect mode end to end
+        run: xvfb-run -a bash scripts/verify_pixel_perfect.sh
+
+      - name: Verify asset failure modes end to end
+        run: xvfb-run -a bash scripts/verify_assets.sh
 
       - name: Upload the captured frames
         uses: actions/upload-artifact@v4

@@ -24,6 +24,9 @@ cargo clippy --workspace --all-targets -- -D warnings
 echo "==> cargo build --workspace --release"
 cargo build --workspace --release
 
+echo "==> generator check: the committed assets match scripts/generate_assets.py"
+python3 scripts/generate_assets.py --check
+
 if command -v xvfb-run >/dev/null 2>&1; then
     echo "==> headless smoke test: 120 frames under Xvfb, captured and verified"
     mkdir -p artifacts
@@ -42,8 +45,20 @@ if command -v xvfb-run >/dev/null 2>&1; then
     else
         echo "==> skipping the input and camera verification: xdotool is not installed"
     fi
+
+    echo "==> showcase verification: rotation, tint, alpha, samplers, PNG alpha"
+    RUST_LOG="${RUST_LOG:-info}" xvfb-run -a bash scripts/verify_showcase.sh
+
+    echo "==> stress verification: 1000 sprites in one batch and one draw call"
+    RUST_LOG="${RUST_LOG:-info}" xvfb-run -a bash scripts/verify_stress.sh
+
+    echo "==> pixel-perfect verification: integer zoom and physical-grid alignment"
+    RUST_LOG="${RUST_LOG:-info}" xvfb-run -a bash scripts/verify_pixel_perfect.sh
+
+    echo "==> asset verification: generator check and readable failure modes"
+    RUST_LOG="${RUST_LOG:-info}" xvfb-run -a bash scripts/verify_assets.sh
 else
-    echo "==> skipping the headless smoke test: xvfb-run is not installed"
+    echo "==> skipping the headless and runtime verification: xvfb-run is not installed"
 fi
 
 echo
