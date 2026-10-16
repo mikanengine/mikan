@@ -121,8 +121,8 @@ Or run all of them, plus the headless runtime checks, with one command:
 ```
 
 The script also runs the generator check and the headless smoke test, capture,
-input, camera, showcase, stress, pixel-perfect, and asset verification below
-when `xvfb-run` is available, and skips the display-dependent ones with a
+input, camera, ecs, showcase, stress, pixel-perfect, and asset verification
+below when `xvfb-run` is available, and skips the display-dependent ones with a
 notice when it is not.
 
 Logging is controlled with the standard `RUST_LOG` environment variable:
@@ -231,6 +231,26 @@ pixels.
 Both checks find the square by colour (`scripts/verify_camera.py`), so they also
 exercise the texture path: the player tile has a darker border and a diagonal
 highlight, and a diagonal edge cannot come from an axis-aligned flat rectangle.
+
+### Verifying the ECS
+
+The classic scene's player is a `mikan-ecs` entity whose systems run once per
+fixed step; `scripts/verify_ecs.sh` checks that the schedule is what moved it:
+
+```bash
+xvfb-run -a bash scripts/verify_ecs.sh
+```
+
+It requires the startup log to list one entity, its four components, and the
+system order `snapshot, input, movement, clamp`; then holds `D` and requires
+the shutdown log's moved-step counter and final position to agree exactly:
+every moved step advanced 3.5 px (420 px/s divided by the 120 Hz fixed step)
+from the start centre, until the right wall clamps the player (the step that
+reaches the wall counts as moved; steps pinned against it change nothing and
+do not). Finally it runs with no input at all and requires the counter to stay
+at zero and the square to sit at the start centre. That is what "systems are
+scheduled on the fixed timestep, exactly once per step" means as an observable
+fact. The guide for the layer itself is [`ecs.md`](ecs.md).
 
 ### Verifying the showcase scene
 

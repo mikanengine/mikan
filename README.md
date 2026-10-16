@@ -11,7 +11,8 @@ This is an early but real vertical slice: a windowed application that renders at
 vsync, loads PNG sprites and sprite-sheet metadata from disk, draws textured
 (rotated, tinted, alpha-blended) sprites with per-sprite sampling, through a
 minimal 2D camera with an optional pixel-perfect mode, reads the keyboard, runs
-a fixed-timestep simulation, handles resize and every recoverable swap-chain
+a fixed-timestep simulation whose classic-scene player is an ECS entity driven
+by explicitly ordered systems, handles resize and every recoverable swap-chain
 condition, reports draw statistics, and exits cleanly.
 
 | Capability | State |
@@ -29,9 +30,10 @@ condition, reports draw statistics, and exits cleanly.
 | Minimal 2D camera (position + zoom, follow or pixel space) | implemented, runtime-verified |
 | Pixel-perfect mode (integer zoom, physical-pixel snapping) | implemented, runtime-verified |
 | Engine facade (`mikan`): one lifecycle for renderer creation, resize, errors | implemented, runtime-verified |
+| ECS-lite (`mikan-ecs`): generational entities, sparse-set components, resources, ordered systems | implemented, runtime-verified |
 | Frame statistics (sprites/batches/draw calls) and a sprite benchmark | implemented, measured |
 | Offscreen frame capture (PPM) for tests and tooling | implemented, runtime-verified |
-| 3D, audio, physics, ECS, hot reload | **not implemented** — see the roadmap |
+| 3D, audio, physics, hot reload | **not implemented** — see the roadmap |
 
 ## Quick start
 
@@ -58,11 +60,11 @@ cargo run -p demo2d --release -- --pixel-perfect 240x150          # integer-zoom
 | `Escape` | Quit |
 | Window close button | Quit |
 
-The square is simulated at a fixed 120 Hz and drawn interpolated, so motion
-stays smooth even when the display refresh rate does not divide the simulation
-rate evenly. `cargo run -p demo2d -- --help` lists every option; see
-[`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md) for the full command reference,
-including headless smoke-test and benchmark modes.
+The square is a `mikan-ecs` entity simulated at a fixed 120 Hz and drawn
+interpolated, so motion stays smooth even when the display refresh rate does
+not divide the simulation rate evenly. `cargo run -p demo2d -- --help` lists
+every option; see [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md) for the full
+command reference, including headless smoke-test and benchmark modes.
 
 ## Workspace layout
 
@@ -70,26 +72,27 @@ including headless smoke-test and benchmark modes.
 crates/mikan            engine facade: the application lifecycle that composes platform and rendering
 crates/mikan-core       configuration, time, fixed timestep, logging, 2D camera, shared types
 crates/mikan-assets     PNG decoding and sprite-sheet metadata (CPU only, no graphics)
+crates/mikan-ecs        entity/component storage, resources, and system scheduling (CPU only)
 crates/mikan-platform   window lifecycle, input state, application runner (winit)
 crates/mikan-render     device and swap chain management, sprites and textures, capture (wgpu)
 games/demo2d            playable 2D demo built on the engine runtime
-docs/                   architecture, development guide, FFI policy, sprite-sheet format, ADRs
+docs/                   architecture, development guide, FFI policy, sprite-sheet format, ECS guide, ADRs
 ```
 
 Dependency direction is one-way and enforced by the manifests:
 
 ```
-                 mikan-core
-                 ^    ^   ^
-                 |    |   |
-      mikan-assets   |   mikan-render        (assets and rendering are siblings:
-                 ^   |   ^                   decoding never touches the GPU,
-                 |   |   |                   the renderer never reads a file)
-                  \  |  /
-                    mikan                   (facade: Game, Engine, run)
-                      ^
-                      |
-                   demo2d                   (depends only on mikan)
+                    mikan-core                mikan-ecs
+                        |                         |
+        +---------------+                         |
+        |               |                         |
+ mikan-assets    mikan-platform            mikan-render
+        |               |                         |
+        +---------------+-------------------------+
+                        |
+                      mikan                   (facade: Game, Engine, run)
+                        |
+                     demo2d                   (depends only on mikan)
 ```
 
 `mikan-platform` and `mikan-render` are siblings: the renderer knows nothing
@@ -111,6 +114,10 @@ still meet directly in applications that wire the layers by hand. See
   errors) and `SpriteSheet` (named frames from a documented Aseprite JSON
   subset, validated and converted to inset UV rectangles). No window, no
   device.
+- **`mikan-ecs`** — entities (generational handles that cannot go stale),
+  components in insertion-ordered sparse sets, resources, and a schedule that
+  runs named systems once each in registration order. No window, no device, no
+  workspace dependencies; the guide is [`docs/ecs.md`](docs/ecs.md).
 - **`mikan-platform`** — the app lifecycle (`App`/`AppContext`), input snapshot
   (`InputState`), and the window runner. It owns the only windowing dependency.
 - **`mikan-render`** — `Renderer`: instance, adapter, device, queue, swap chain,
@@ -126,25 +133,30 @@ still meet directly in applications that wire the layers by hand. See
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | Goals, crate responsibilities, lifecycle, error strategy |
 | [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md) | Prerequisites, build, test, run, headless verification, benchmark protocol |
 | [`docs/sprite-sheets.md`](docs/sprite-sheets.md) | The accepted sprite-sheet JSON, validation, and the half-texel UV inset |
+| [`docs/ecs.md`](docs/ecs.md) | The ECS-lite guide: entities, components, resources, systems, determinism |
 | [`docs/ffi.md`](docs/ffi.md) | Native code policy and boundary rules |
 | [`docs/STATUS.md`](docs/STATUS.md) | What is implemented, tested, and pending |
 | [`docs/adr/`](docs/adr/) | Architecture decision records |
 
 ## Roadmap
 
+[`docs/ecs.md`](docs/ecs.md) documents the ECS-lite layer that landed last:
+entities, components, resources, and explicitly ordered systems on the existing
+fixed timestep.
+
 Next milestones, in order of intended value:
 
-1. ECS-lite: entity storage and systems with explicit scheduling.
-2. 2D collision detection and resolution.
-3. Asset pipeline depth: atlas packing and hot reload on top of `mikan-assets`.
-4. Runtime verification on Windows, macOS, and Wayland (ADR 0005), and a
+1. 2D collision detection and resolution: broad phase plus AABB resolution on
+   the same fixed step.
+2. Asset pipeline depth: atlas packing and hot reload on top of `mikan-assets`.
+3. Runtime verification on Windows, macOS, and Wayland (ADR 0005), and a
    hardware-GPU measurement of the sprite benchmark.
 
 3D work, native C modules, and C++ integrations are deliberately out of scope
 until the 2D foundation is stable. Each of those needs a concrete justification
 before it is started; see [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md), ADR
-0004, and ADRs 0006, 0007, and 0008 (the sprites/camera, facade, and
-sprite-rendering milestones record why they are Rust-only).
+0004, and ADRs 0006–0009 (the sprites/camera, facade, sprite-rendering, and
+ECS-lite milestones record why they are Rust-only).
 
 ## Platform support
 

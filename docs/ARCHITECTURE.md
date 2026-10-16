@@ -28,7 +28,8 @@ as not implemented.
 
 - A plugin system, reflection, or a dependency-injection container.
 - A render graph, material system, or deferred renderer.
-- An ECS, job system, or custom allocator.
+- An archetype ECS, job system, or custom allocator. (A deliberately small
+  ECS-lite crate exists; see §2.)
 - 3D rendering, PBR, shadows, or post-processing.
 - Native C/C++ modules without a concrete, documented justification (ADR 0004).
 
@@ -37,6 +38,7 @@ as not implemented.
 ```
 crates/mikan-core        no dependencies on windowing or graphics
 crates/mikan-assets      PNG decoding and sprite-sheet metadata; no graphics
+crates/mikan-ecs         entity/component storage and system scheduling; no workspace deps
 crates/mikan-platform    winit is its only OS dependency; no graphics
 crates/mikan-render      wgpu is its only graphics dependency; no event handling
 crates/mikan             facade: one lifecycle that composes the platform and render layers
@@ -84,6 +86,32 @@ CPU-side asset loading: files in, pixels and metadata out. It depends on
 The split is deliberate: the render layer accepts pixels (`TextureDescriptor`)
 and knows nothing about files; the application connects the two, and chooses
 the texture encoding (`Linear` for procedural data, `Srgb` for standard PNGs).
+
+### `mikan-ecs`
+
+Entity storage and systems, the CPU-side model a game simulates. It has no
+workspace dependency at all (only `thiserror`), so gameplay data and schedules
+are testable without a window, a device, or the engine runtime.
+
+- `Entity` — a generational handle (`index` + `generation`, `Display` as
+  `{index}v{generation}`). Slots are recycled in LIFO order and generations
+  increment, so a despawned handle never resolves again and stale handles are
+  errors, not aliases.
+- `World` — entity allocation, one sparse-set storage per component type keyed
+  by `TypeId`, and typed resources for data no entity owns. Iteration is
+  insertion-ordered and removal preserves that order (an O(n) trade stated in
+  ADR 0009). `iter`/`iter_mut` query one component, `iter2`/`iter2_mut` two.
+- `Schedule` — named systems run once each, in registration order, with the
+  `dt` the caller passes. No dependency graph, no parallelism, no timer of its
+  own: `mikan-core`'s fixed timestep remains the only scheduler. The user guide
+  is `docs/ecs.md`.
+- `DeadEntity` — the single error: a component operation targeted an entity
+  that is not alive.
+
+The crate is deliberately *lite*: no archetypes, query caching, change
+detection, or events. It is single-threaded by design and makes no `Send`/
+`Sync` claim. ADR 0009 records the decisions and why this milestone adds no
+native module.
 
 ### `mikan-platform`
 
@@ -140,14 +168,15 @@ created, driven, and torn down.
   `init` ran, and translates game errors into `PlatformError`. The event loop
   itself remains `mikan_platform::run`; the facade adds one adapter, not a
   second runtime.
-- Curated re-exports of all four layers, including `mikan_assets`, so an
-  application needs one dependency for the common case.
+- Curated re-exports of all five layers, including `mikan_assets` and
+  `mikan_ecs`, so an application needs one dependency for the common case.
 
 ### `games/demo2d`
 
 The application. It implements the facade's `Game` trait, owns gameplay state
-(`Square`), and contains the command-line interface, three scenes (classic,
-showcase, stress), asset loading and upload, the PPM writer, and the
+(the classic scene's player entity and the `mikan-ecs` schedule that drives
+it, in `player.rs`), and contains the command-line interface, three scenes
+(classic, showcase, stress), asset loading and upload, the PPM writer, and the
 frame-time and draw statistics. Its assets (`atlas.png`, `atlas.json`,
 `star.png`) are committed files produced by `scripts/generate_assets.py` and
 loaded through `mikan-assets` at startup. It depends on `mikan` only; the
@@ -156,36 +185,37 @@ other layers reach it through the facade's re-exports.
 ## 3. Dependency direction
 
 ```
-                 +---------------+
-                 |  mikan-core   |   (no deps beyond log/env_logger/thiserror)
-                 +-------+-------+
-                         |
-     +-------------------+-------------------+
-     |                   |                   |
-+----+-----+     +-------+-------+    +------+-------+
-| mikan-   |     | mikan-assets  |    | mikan-render |
-| platform |     | (png, serde)  |    | (wgpu)       |
-+----+-----+     +-------+-------+    +------+-------+
-     |                   |                   |
-     +-------------------+-------------------+
-                         |
-                    +----+----+
-                    |  mikan  |   (facade: Game, Engine, run)
-                    +----+----+
-                         |
-                    +----+----+
-                    | demo2d  |   (depends only on mikan)
-                    +---------+
+                  +---------------+        +--------------+
+                  |  mikan-core   |        |  mikan-ecs   |
+                  +-------+-------+        |  (thiserror; |
+                          |                |  no workspace|
+      +-------------------+------------+   |  deps)       |
+      |                   |            |   +------+-------+
++-----+-----+   +---------+-----+  +---+-------+  |
+| mikan-    |   | mikan-assets  |  | mikan-    |  |
+| platform  |   | (png, serde)  |  | render    |  |
++-----+-----+   +---------+-----+  +---+-------+  |
+      |                   |            |          |
+      +-------------------+------------+----------+
+                          |
+                     +----+----+
+                     |  mikan  |   (facade: Game, Engine, run)
+                     +----+----+
+                          |
+                     +----+----+
+                     | demo2d  |   (depends only on mikan)
+                     +---------+
 ```
 
 Rules that keep this acyclic and comprehensible:
 
-- `mikan-core` depends on nothing in the workspace.
+- `mikan-core` and `mikan-ecs` depend on nothing in the workspace; `mikan-ecs`
+  is simulation data and scheduling, and knows nothing about the engine.
 - `mikan-assets` depends on `mikan-core` only: no windowing, no graphics.
 - `mikan-platform` and `mikan-render` never depend on each other, and
   `mikan-render` does not depend on `mikan-assets` — the application glues
   decoded pixels into `TextureDescriptor`.
-- `mikan` may depend on all four; it re-exports them so applications need one
+- `mikan` may depend on all five; it re-exports them so applications need one
   dependency. Applications that need custom wiring can still use
   `mikan_platform::App` directly.
 - No crate depends on an application.
@@ -252,6 +282,10 @@ continue?                  Presented/Skipped -> request another redraw
 Properties this gives us:
 
 - **Simulation is deterministic in time.** Gameplay sees a constant `dt`.
+- **Update logic has one visible order.** An application runs its `mikan-ecs`
+  schedule once per fixed update; systems execute once each, in registration
+  order, and the schedule has no timer of its own — the platform decides when
+  it runs at all.
 - **Input is never dropped.** Press and release edges are consumed only by a
   frame that ran at least one fixed update, so a tap that lands between two
   simulation steps is observed by the next one. (With rendering at 600 fps and a
@@ -347,6 +381,7 @@ job; the renderer never reads a path.
 | --- | --- | --- |
 | `mikan-core` | `ConfigError` | Validation at startup; no runtime panics for bad input |
 | `mikan-assets` | `ImageError`, `SheetError` | Files are validated at load: limits, encodings, rectangles, pivots; a bad asset is an error before it reaches the GPU |
+| `mikan-ecs` | `DeadEntity` | A component operation on a dead handle returns it; the only panic is the documented `iter2_mut` misuse (two identical component types) |
 | `mikan-platform` | `PlatformError` (+ `PlatformError::app` for application errors) | Fatal errors stop the loop, run `shutdown`, and reach `main` |
 | `mikan-render` | `RenderError` | Recoverable swap-chain states are *not* errors; unrecoverable ones are |
 | `mikan` | `Game::Error` (bounded by `From<RenderError>`) | Renderer operations return `RenderError` so `?` composes; renderer startup failures are labeled and wrapped with `PlatformError::app` |
@@ -390,7 +425,9 @@ The policy that governs any future native module — ownership, ABI, error
 translation, thread safety, and the criteria that make a module worth writing in
 C or C++ at all — is documented in [`ffi.md`](ffi.md) and ADR 0004. The engine
 must never depend on an unfinished native module: native code arrives with its
-own tests and a safe wrapper, or it does not arrive.
+own tests and a safe wrapper, or it does not arrive. ADRs 0006, 0007, 0008, and
+0009 record that the sprites/camera, facade, sprite-rendering, and ECS-lite
+milestones each added none, with the reason.
 
 ## 10. Extension points
 
@@ -406,12 +443,16 @@ These are seams the current design leaves open. None of them are implemented.
 - **Asset pipeline.** `mikan-assets` decodes files one at a time; atlas
   packing, hot reload, and background loading are future work that plugs in
   front of `Renderer::create_texture` without changing the renderer.
-- **ECS-lite.** `App::update` is the natural place to drive systems; the fixed
-  timestep already provides a deterministic schedule.
+- **ECS evolution.** `mikan-ecs` is the seam: archetype-dense storage, a
+  parallel executor, change detection, or query filters are local additions
+  once a profiled need exists. Nothing is stubbed today.
 - **Frame graph / passes.** `render_frame` is the single place where pass
   recording happens; splitting it into ordered passes is a local change.
 - **Native modules.** `mikan-core` is the intended home for safe wrappers around
   small C modules (for example an arena allocator), behind the rules in
-  `ffi.md`. ADR 0008 records why the 2D sprite-rendering milestone added none:
-  its benchmark points at rasterization throughput, not at a boundary Rust
-  expresses badly.
+  `ffi.md`. ADR 0008 records why the 2D sprite-rendering milestone added none
+  (its benchmark points at rasterization throughput, not at a boundary Rust
+  expresses badly), and ADR 0009 why the ECS-lite milestone added none: its
+  value is compile-time-enforced handle validity and non-aliasing over a wide,
+  allocation-heavy data structure — exactly the properties an FFI boundary
+  would weaken.

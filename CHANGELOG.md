@@ -11,6 +11,36 @@ listed here.
 
 ### Added
 
+- `mikan-ecs`: a CPU-only crate (depends on `thiserror` only, nothing from the
+  workspace) providing `Entity` (generational handles, `Display` as
+  `{index}v{generation}`, LIFO slot reuse, stale handles never resolve),
+  `World` (one insertion-ordered sparse-set storage per component type keyed
+  by `TypeId`, typed resources with replace-and-return semantics,
+  `iter`/`iter_mut`/`iter2`/`iter2_mut` queries, `component_count` diagnostics),
+  `Schedule` (named systems run once each, in registration order, with the
+  caller's `dt`; `names()` for logs and tests), and `DeadEntity` (the one
+  error: a component operation on a dead handle). Removal preserves iteration
+  order — an O(n) trade stated in the guide — and `iter2_mut` proves its two
+  storages disjoint with `HashMap::get_disjoint_mut` instead of `unsafe`.
+- `mikan`: re-exports of `mikan_ecs` and `DeadEntity`, `Entity`, `Schedule`,
+  `World`.
+- `demo2d`: the classic scene's player is an entity (`player.rs`): components
+  `Position`, `PreviousPosition`, `Motion`, `Player`; resources `MoveDirection`
+  and `WorldBounds`; systems `snapshot`, `input`, `movement`, `clamp` running
+  once per fixed step in exactly that order, with the previous per-step
+  arithmetic preserved bit for bit. Rendering interpolates through the pure
+  `render_pose` and never mutates the simulation; shutdown logs the entity,
+  fixed-step, and moved-step counts, and startup logs the system order.
+- Verification: `scripts/verify_ecs.sh` — the startup log must list the player
+  entity, its four components, and the system order; holding `D` must move the
+  player exactly 3.5 px per *moved* fixed step (420 px/s at 120 Hz) and the
+  shutdown counter must agree with the final position; a no-input run must keep
+  the moved-step counter at zero. `scripts/verify.sh` and the CI smoke job run
+  it.
+- Documentation: ADR 0009 (ECS-lite decisions, determinism contract, and why
+  the milestone adds no native module) and `docs/ecs.md` (the user guide:
+  entities, components, resources, systems, determinism, performance limits);
+  refreshed README, ARCHITECTURE, DEVELOPMENT, STATUS, and this changelog.
 - `mikan-assets`: a CPU-only crate (`png`, `serde`, `serde_json`; no graphics
   dependency) providing `Image` (PNG decoded to RGBA8, every color type
   normalized, per-side and allocation limits, descriptive `ImageError`s) and
@@ -96,6 +126,9 @@ listed here.
 
 ### Changed
 
+- `demo2d`: the classic scene's player state and movement code moved from the
+  `Square` struct into `mikan-ecs` components, resources, and systems; the
+  fixed-step arithmetic and the rendered behavior are unchanged.
 - `demo2d` no longer generates its atlas in code: it loads `atlas.png`,
   `atlas.json`, and `star.png` from `games/demo2d/assets` and uploads them as
   sRGB textures.
@@ -104,6 +137,8 @@ listed here.
 
 ### Removed
 
+- `games/demo2d/src/square.rs` — the `Square` type, replaced by the player
+  entity and its schedule in `games/demo2d/src/player.rs`.
 - `games/demo2d/src/atlas.rs` — the procedural two-tile atlas, replaced by
   committed, generated PNG assets.
 
