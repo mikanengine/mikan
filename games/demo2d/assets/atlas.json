@@ -1,0 +1,40 @@
+{
+  "frames": {
+    "player": {
+      "frame": {
+        "x": 0,
+        "y": 0,
+        "w": 32,
+        "h": 32
+      },
+      "duration": 100
+    },
+    "marker": {
+      "frame": {
+        "x": 32,
+        "y": 0,
+        "w": 32,
+        "h": 32
+      },
+      "duration": 100
+    },
+    "checker": {
+      "frame": {
+        "x": 64,
+        "y": 0,
+        "w": 32,
+        "h": 32
+      },
+      "duration": 100
+    }
+  },
+  "meta": {
+    "image": "atlas.png",
+    "size": {
+      "w": 96,
+      "h": 32
+    },
+    "format": "RGBA8888",
+    "scale": "1"
+  }
+}

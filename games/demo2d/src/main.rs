@@ -1,12 +1,14 @@
 //! Mikan 2D demo.
 //!
-//! Opens a window, renders a square that moves with the keyboard, and exits
-//! cleanly when the window is closed. See `--help` for the smoke-test options.
+//! Opens a window and renders one of three scenes: the classic driveable
+//! square, a feature showcase, or a sprite-stress scene. Assets are loaded from
+//! `games/demo2d/assets` at startup. See `--help` for the smoke-test options.
 
-mod atlas;
+mod assets;
 mod cli;
 mod demo;
 mod ppm;
+mod scene;
 mod square;
 
 use std::process::ExitCode;
@@ -51,16 +53,25 @@ fn run() -> Result<(), RunError> {
         Err(error) => return Err(error.into()),
     };
 
-    let config = EngineConfig {
-        title: "Mikan - Demo 2D (WASD to move, Esc to quit)".to_string(),
+    let mut config = EngineConfig {
+        title: format!(
+            "Mikan - Demo 2D ({}) - WASD to move, Esc to quit",
+            cli.scene.name()
+        ),
+        vsync: cli.vsync,
         ..EngineConfig::default()
     };
+    if let Some([width, height]) = cli.size {
+        config.window_width = width;
+        config.window_height = height;
+    }
 
     log::info!(
-        "starting demo2d: {}x{} window, {} Hz fixed updates",
+        "starting demo2d: {}x{} window, {} Hz fixed updates, vsync {}",
         config.window_width,
         config.window_height,
-        config.fixed_timestep_hz
+        config.fixed_timestep_hz,
+        config.vsync,
     );
     mikan::run(config, Demo::new(cli))?;
     Ok(())

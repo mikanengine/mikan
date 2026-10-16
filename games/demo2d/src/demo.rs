@@ -1,34 +1,26 @@
-//! The demo application: a square you can drive around with the keyboard.
+//! The demo application: three scenes over the engine's real runtime.
 //!
 //! Everything gameplay-facing lives here. The demo implements [`Game`], so it
 //! is driven by the engine's real runtime through the facade: the facade owns
 //! the renderer and forwards resizes, `mikan-platform` owns the window, input,
 //! and timing, and `mikan-render` draws.
 //!
-//! Textures come from a procedural atlas (see [`crate::atlas`]); nothing is
-//! loaded from disk yet.
+//! Assets are real files loaded by `mikan-assets` at startup (see
+//! [`crate::assets`]); the sprite layouts are in [`crate::scene`].
 
 use std::time::Duration;
 
 use mikan::{
-    AppContext, Camera2d, CaptureBuffer, Engine, Frame, FrameOutcome, Game, KeyCode, PhysicalKey,
-    RenderError, Sprite, Texture, TextureDescriptor,
+    AppContext, Camera2d, CaptureBuffer, Engine, Frame, FrameOutcome, FrameStats, Game, KeyCode,
+    PhysicalKey, RenderError, SamplerMode, Sprite,
 };
 use thiserror::Error;
 
-use crate::atlas;
-use crate::cli::{CameraMode, Cli};
+use crate::assets::{AssetError, Assets};
+use crate::cli::{CameraMode, Cli, Scene};
 use crate::ppm;
+use crate::scene::{self, StressLayout};
 use crate::square::{Square, direction_from_keys};
-
-/// Side length of the player square in pixels.
-const SQUARE_SIZE: f32 = 96.0;
-/// Player speed in pixels per second.
-const SQUARE_SPEED: f32 = 420.0;
-/// Edge length of the static marker drawn in the corner.
-const MARKER_SIZE: f32 = 48.0;
-/// Distance of the marker from the bottom-left corner.
-const MARKER_MARGIN: f32 = 24.0;
 
 /// Failures the demo itself can report.
 #[derive(Debug, Error)]
@@ -36,6 +28,10 @@ pub enum DemoError {
     /// Rendering failed.
     #[error(transparent)]
     Render(#[from] RenderError),
+
+    /// Loading the demo's assets failed.
+    #[error(transparent)]
+    Asset(#[from] AssetError),
 
     /// Writing a captured frame failed.
     #[error(transparent)]
@@ -63,16 +59,22 @@ pub enum DemoError {
 /// Demo application state.
 pub struct Demo {
     cli: Cli,
-    /// Atlas texture uploaded at startup, kept alive for the sprites that
-    /// borrow it.
-    atlas: Option<Texture>,
+    /// Textures and sheet loaded at startup, kept alive for the sprites that
+    /// borrow them.
+    assets: Option<Assets>,
     square: Square,
+    /// Stress-scene grid, built once the viewport is known.
+    layout: Option<StressLayout>,
     presented: u64,
     capture: Option<CaptureBuffer>,
     captured: bool,
     capture_finalized: bool,
     frame_times: Vec<Duration>,
     idle_warned: bool,
+    /// Statistics of the last frame submitted to the GPU.
+    last_stats: FrameStats,
+    /// Highest batch count seen, for reporting that batching held up.
+    max_batches: usize,
 }
 
 impl Demo {
@@ -82,14 +84,22 @@ impl Demo {
         Self {
             capture: cli.capture.as_ref().map(|_| CaptureBuffer::new()),
             cli,
-            atlas: None,
-            square: Square::new([0.0, 0.0], SQUARE_SIZE, SQUARE_SPEED),
+            assets: None,
+            square: Square::new([0.0, 0.0], scene::PLAYER_SIZE, scene::PLAYER_SPEED),
+            layout: None,
             presented: 0,
             captured: false,
             capture_finalized: false,
             frame_times: Vec::new(),
             idle_warned: false,
+            last_stats: FrameStats::default(),
+            max_batches: 0,
         }
+    }
+
+    /// The sampler the scenes use unless they pin their own.
+    fn sampler(&self) -> SamplerMode {
+        self.cli.sampler.unwrap_or_default()
     }
 
     /// Current movement direction from the held keys.
@@ -104,27 +114,66 @@ impl Demo {
         ))
     }
 
-    /// Sprites for this frame: the player square and a static corner marker,
-    /// both sampling their tile of the atlas.
+    /// The world-space size of the visible region: what the camera shows.
     ///
-    /// The returned sprites borrow `atlas`, which is a parameter rather than a
-    /// field read so the borrow stays visible at the call site.
-    fn sprites<'t>(&self, atlas: &'t Texture, viewport: [f32; 2], alpha: f32) -> [Sprite<'t>; 2] {
-        let center = self.square.interpolated_position(alpha);
-        let size = self.square.size();
-        let marker_center = [
-            MARKER_MARGIN + MARKER_SIZE * 0.5,
-            (viewport[1] - MARKER_MARGIN - MARKER_SIZE * 0.5).max(MARKER_SIZE * 0.5),
-        ];
-        [
-            Sprite::new(center, [size, size], atlas).with_uv(atlas::tile_uv(atlas::PLAYER_TILE)),
-            Sprite::new(marker_center, [MARKER_SIZE, MARKER_SIZE], atlas)
-                .with_uv(atlas::tile_uv(atlas::MARKER_TILE)),
-        ]
+    /// One world unit is one physical pixel without a camera; a zoom shows
+    /// `viewport / zoom` world units, and pixel-perfect mode shows exactly the
+    /// virtual screen.
+    fn world_view(&self, viewport: [f32; 2]) -> [f32; 2] {
+        if let Some(virtual_size) = self.cli.pixel_perfect {
+            return [virtual_size[0] as f32, virtual_size[1] as f32];
+        }
+        match self.cli.camera {
+            CameraMode::None => viewport,
+            CameraMode::Follow => [viewport[0] / self.cli.zoom, viewport[1] / self.cli.zoom],
+        }
+    }
+
+    /// Sprites for this frame, in painter order.
+    ///
+    /// `assets` is a parameter rather than a field read so the returned
+    /// sprites borrow only the assets, which keeps the mutable capture borrow
+    /// free at the call site.
+    fn sprites<'a>(
+        &self,
+        assets: &'a Assets,
+        viewport: [f32; 2],
+        elapsed: f32,
+        alpha: f32,
+    ) -> Vec<Sprite<'a>> {
+        let sampler = self.sampler();
+        let world = self.world_view(viewport);
+        match self.cli.scene {
+            Scene::Classic => scene::classic(
+                assets,
+                self.square.interpolated_position(alpha),
+                self.square.size(),
+                world,
+                sampler,
+            )
+            .to_vec(),
+            Scene::Showcase => scene::showcase(assets, sampler),
+            Scene::Stress => {
+                let mut sprites = Vec::new();
+                if let Some(layout) = self.layout.as_ref() {
+                    scene::stress_sprites(assets, layout, elapsed, sampler, &mut sprites);
+                }
+                sprites
+            }
+        }
     }
 
     /// Camera for this frame, or `None` for the pixel-space view.
-    fn camera(&self, alpha: f32) -> Option<Camera2d> {
+    fn camera(&self, viewport: [u32; 2], alpha: f32) -> Option<Camera2d> {
+        if let Some(virtual_size) = self.cli.pixel_perfect {
+            let position = match self.cli.camera {
+                // Without a following camera the virtual screen sits at the
+                // world origin, like a fixed game screen.
+                CameraMode::None => [virtual_size[0] as f32 * 0.5, virtual_size[1] as f32 * 0.5],
+                CameraMode::Follow => self.square.interpolated_position(alpha),
+            };
+            return Some(Camera2d::pixel_perfect(position, viewport, virtual_size));
+        }
         match self.cli.camera {
             CameraMode::None => None,
             // The camera centers on the interpolated player position, so the
@@ -166,9 +215,24 @@ impl Demo {
         Ok(())
     }
 
-    /// Prints frame-time statistics collected during the run.
+    /// Prints frame-time and draw statistics collected during the run.
     fn print_stats(&self) {
-        if !self.cli.stats || self.frame_times.is_empty() {
+        if !self.cli.stats {
+            return;
+        }
+        let sampler = sampler_name(self.sampler());
+        println!(
+            "render: scene {} | sampler {} | sprites {} | batches {} | draw calls {} \
+             (last presented frame, max batches {})",
+            self.cli.scene.name(),
+            sampler,
+            self.last_stats.sprites,
+            self.last_stats.batches,
+            self.last_stats.draw_calls,
+            self.max_batches,
+        );
+
+        if self.frame_times.is_empty() {
             return;
         }
         let mut times: Vec<f32> = self
@@ -192,6 +256,14 @@ impl Demo {
     }
 }
 
+/// Display name of a sampler mode, for logs and statistics.
+fn sampler_name(sampler: SamplerMode) -> &'static str {
+    match sampler {
+        SamplerMode::Linear => "linear",
+        SamplerMode::Nearest => "nearest",
+    }
+}
+
 impl Game for Demo {
     type Error = DemoError;
 
@@ -202,13 +274,7 @@ impl Game for Demo {
             return Err(DemoError::CaptureUnsupported);
         }
 
-        let atlas_data = atlas::build();
-        let atlas = engine.renderer().create_texture(TextureDescriptor::new(
-            atlas_data.width,
-            atlas_data.height,
-            &atlas_data.pixels,
-        ))?;
-
+        let assets = Assets::load(engine.renderer(), &self.cli.assets)?;
         let info = engine.renderer().adapter_info();
         log::info!(
             "rendering with {} ({:?}), swap chain format {:?}",
@@ -216,22 +282,57 @@ impl Game for Demo {
             info.backend,
             engine.renderer().surface_format()
         );
+        let (width, height) = engine.renderer().size();
+        let (atlas_width, atlas_height) = assets.atlas.size();
+        let (star_width, star_height) = assets.star.size();
         log::info!(
-            "textures: procedural atlas {}x{}, {} tiles of {}px",
-            atlas_data.width,
-            atlas_data.height,
-            atlas::ATLAS_COLUMNS * atlas::ATLAS_ROWS,
-            atlas::TILE_SIZE
+            "assets: {} -> atlas {}x{} ({} frames), star {}x{}",
+            self.cli.assets.display(),
+            atlas_width,
+            atlas_height,
+            assets.sheet.len(),
+            star_width,
+            star_height,
         );
+        log::info!(
+            "scene {} | sampler {} | camera {:?} | vsync {} | window {}x{}",
+            self.cli.scene.name(),
+            sampler_name(self.sampler()),
+            self.cli.camera,
+            self.cli.vsync,
+            width,
+            height,
+        );
+        if let Some(virtual_size) = self.cli.pixel_perfect {
+            log::info!(
+                "pixel-perfect: virtual {}x{}, integer zoom x{}",
+                virtual_size[0],
+                virtual_size[1],
+                Camera2d::pixel_perfect([0.0, 0.0], [width, height], virtual_size).effective_zoom(),
+            );
+        }
         log::info!("controls: WASD or arrow keys to move, Escape to quit");
 
-        let (width, height) = engine.renderer().size();
+        // Start where the scene's default view is centered: the visible world
+        // region's middle, so the player is on screen in every mode.
+        let view = self.world_view([width as f32, height as f32]);
         self.square = Square::new(
-            [width as f32 * 0.5, height as f32 * 0.5],
-            SQUARE_SIZE,
-            SQUARE_SPEED,
+            [view[0] * 0.5, view[1] * 0.5],
+            scene::PLAYER_SIZE,
+            scene::PLAYER_SPEED,
         );
-        self.atlas = Some(atlas);
+        if self.cli.scene == Scene::Stress {
+            let layout =
+                StressLayout::new(self.cli.stress_sprites(), [width as f32, height as f32]);
+            log::info!(
+                "stress: {} sprites, {}x{} cells",
+                layout.len(),
+                layout.cell()[0].round(),
+                layout.cell()[1].round(),
+            );
+            self.layout = Some(layout);
+        }
+        self.assets = Some(assets);
         Ok(())
     }
 
@@ -248,8 +349,8 @@ impl Game for Demo {
 
         let direction = Self::direction(engine.ctx());
         let (width, height) = engine.renderer().size();
-        self.square
-            .fixed_update(direction, dt, [width.max(1) as f32, height.max(1) as f32]);
+        let view = self.world_view([width as f32, height as f32]);
+        self.square.fixed_update(direction, dt, view);
         Ok(())
     }
 
@@ -267,16 +368,17 @@ impl Game for Demo {
         }
 
         let alpha = engine.ctx().alpha();
+        let elapsed = engine.ctx().time().elapsed().as_secs_f32();
         let clear_color = engine.ctx().config().clear_color;
         let (width, height) = engine.renderer().size();
 
-        // Sprites borrow the atlas; the borrow ends after the render call,
+        // Sprites borrow the assets; the borrow ends after the render call,
         // which is when the capture buffer is borrowed mutably.
-        let Some(atlas) = self.atlas.as_ref() else {
+        let Some(assets) = self.assets.as_ref() else {
             return Ok(FrameOutcome::Idle);
         };
-        let sprites = self.sprites(atlas, [width as f32, height as f32], alpha);
-        let camera = self.camera(alpha);
+        let sprites = self.sprites(assets, [width as f32, height as f32], elapsed, alpha);
+        let camera = self.camera([width, height], alpha);
         let mut frame = Frame::new(clear_color).with_sprites(&sprites);
         if let Some(camera) = camera {
             frame = frame.with_camera(camera);
@@ -287,6 +389,8 @@ impl Game for Demo {
         if capturing {
             self.captured = true;
         }
+        self.last_stats = engine.renderer().last_frame_stats();
+        self.max_batches = self.max_batches.max(self.last_stats.batches);
 
         match outcome {
             FrameOutcome::Presented => {

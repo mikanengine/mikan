@@ -7,6 +7,7 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
+use mikan::SamplerMode;
 use thiserror::Error;
 
 /// Default abort timeout applied when `--frames` is used without `--timeout`.
@@ -14,6 +15,13 @@ pub const DEFAULT_FRAME_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Zoom used when `--zoom` is not given.
 pub const DEFAULT_ZOOM: f32 = 1.0;
+
+/// Directory loaded when `--assets` is not given, relative to the working
+/// directory (the repository root).
+pub const DEFAULT_ASSETS_DIR: &str = "games/demo2d/assets";
+
+/// Sprites drawn by the stress scene when `--sprites` is not given.
+pub const DEFAULT_STRESS_SPRITES: u32 = 10_000;
 
 /// How the demo drives its 2D camera.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -31,6 +39,40 @@ impl CameraMode {
             "none" => Some(Self::None),
             "follow" => Some(Self::Follow),
             _ => None,
+        }
+    }
+}
+
+/// Which scene the demo draws.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum Scene {
+    /// The original demo: a driveable square and a corner marker.
+    #[default]
+    Classic,
+    /// A fixed gallery: rotation, tint, alpha, nearest vs linear, and the
+    /// transparent star, each at a documented position.
+    Showcase,
+    /// `--sprites` moving sprites from one texture, for benchmarks.
+    Stress,
+}
+
+impl Scene {
+    fn parse(value: &str) -> Option<Self> {
+        match value {
+            "classic" => Some(Self::Classic),
+            "showcase" => Some(Self::Showcase),
+            "stress" => Some(Self::Stress),
+            _ => None,
+        }
+    }
+
+    /// The scene's command-line name.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Classic => "classic",
+            Self::Showcase => "showcase",
+            Self::Stress => "stress",
         }
     }
 }
@@ -55,6 +97,21 @@ pub struct Cli {
     pub camera: CameraMode,
     /// Camera zoom in physical pixels per world unit.
     pub zoom: f32,
+    /// Scene to draw.
+    pub scene: Scene,
+    /// Sampler applied to every sprite the scene does not deliberately pin;
+    /// `None` keeps each scene's default (linear).
+    pub sampler: Option<SamplerMode>,
+    /// Pixel-perfect mode: the virtual screen size, in virtual pixels.
+    pub pixel_perfect: Option<[u32; 2]>,
+    /// Window size in physical pixels; `None` keeps the engine default.
+    pub size: Option<[u32; 2]>,
+    /// Present with vsync; `--no-vsync` clears it for uncapped benchmarking.
+    pub vsync: bool,
+    /// Directory holding `atlas.json`, `atlas.png`, and `star.png`.
+    pub assets: PathBuf,
+    /// Sprite count of the stress scene; `None` uses the default.
+    pub sprites: Option<u32>,
 }
 
 impl Default for Cli {
@@ -66,6 +123,13 @@ impl Default for Cli {
             timeout: None,
             camera: CameraMode::None,
             zoom: DEFAULT_ZOOM,
+            scene: Scene::default(),
+            sampler: None,
+            pixel_perfect: None,
+            size: None,
+            vsync: true,
+            assets: PathBuf::from(DEFAULT_ASSETS_DIR),
+            sprites: None,
         }
     }
 }
@@ -96,6 +160,14 @@ pub enum CliError {
     /// `--zoom` was given without a camera to apply it to.
     #[error("'--zoom' requires '--camera' (for example: --camera follow --zoom 2)")]
     ZoomWithoutCamera,
+    /// `--zoom` and `--pixel-perfect` both set a scale.
+    #[error(
+        "'--zoom' cannot be combined with '--pixel-perfect': the integer zoom is derived from the virtual resolution"
+    )]
+    PixelPerfectWithZoom,
+    /// `--sprites` was given for a scene that has no sprite count.
+    #[error("'--sprites' only applies to '--scene stress'")]
+    SpritesWithoutStress,
 }
 
 impl Cli {
@@ -103,9 +175,10 @@ impl Cli {
     ///
     /// # Errors
     ///
-    /// Returns [`CliError`] for unknown options, missing or invalid values, and
-    /// repeated options. [`CliError::HelpRequested`] is not a failure: the
-    /// caller should print [`Cli::help`] and exit successfully.
+    /// Returns [`CliError`] for unknown options, missing or invalid values,
+    /// repeated options, and option combinations that contradict each other.
+    /// [`CliError::HelpRequested`] is not a failure: the caller should print
+    /// [`Cli::help`] and exit successfully.
     pub fn parse<I>(args: I) -> Result<Self, CliError>
     where
         I: IntoIterator<Item = String>,
@@ -113,6 +186,13 @@ impl Cli {
         let mut cli = Cli::default();
         let mut camera: Option<CameraMode> = None;
         let mut zoom: Option<f32> = None;
+        let mut scene: Option<Scene> = None;
+        let mut sampler: Option<SamplerMode> = None;
+        let mut pixel_perfect: Option<[u32; 2]> = None;
+        let mut size: Option<[u32; 2]> = None;
+        let mut no_vsync = false;
+        let mut assets: Option<PathBuf> = None;
+        let mut sprites: Option<u32> = None;
         let mut args = args.into_iter();
 
         while let Some(argument) = args.next() {
@@ -123,6 +203,12 @@ impl Cli {
                         return Err(CliError::DuplicateArgument(argument));
                     }
                     cli.stats = true;
+                }
+                "--no-vsync" => {
+                    if no_vsync {
+                        return Err(CliError::DuplicateArgument(argument));
+                    }
+                    no_vsync = true;
                 }
                 "--frames" => {
                     let value = args
@@ -152,6 +238,15 @@ impl Cli {
                     }
                     cli.capture = Some(PathBuf::from(value));
                 }
+                "--assets" => {
+                    let value = args
+                        .next()
+                        .ok_or(CliError::MissingValue(argument.clone()))?;
+                    if assets.is_some() {
+                        return Err(CliError::DuplicateArgument(argument));
+                    }
+                    assets = Some(PathBuf::from(value));
+                }
                 "--timeout" => {
                     let value = args
                         .next()
@@ -165,6 +260,25 @@ impl Cli {
                     })?;
                     cli.timeout = Some(Duration::from_secs(seconds));
                 }
+                "--sprites" => {
+                    let value = args
+                        .next()
+                        .ok_or(CliError::MissingValue(argument.clone()))?;
+                    if sprites.is_some() {
+                        return Err(CliError::DuplicateArgument(argument));
+                    }
+                    let count = value.parse::<u32>().map_err(|_| CliError::InvalidValue {
+                        option: argument.clone(),
+                        value: value.clone(),
+                    })?;
+                    if count == 0 {
+                        return Err(CliError::InvalidValue {
+                            option: argument,
+                            value,
+                        });
+                    }
+                    sprites = Some(count);
+                }
                 "--camera" => {
                     let value = args
                         .next()
@@ -177,6 +291,56 @@ impl Cli {
                         value: value.clone(),
                     })?;
                     camera = Some(mode);
+                }
+                "--scene" => {
+                    let value = args
+                        .next()
+                        .ok_or(CliError::MissingValue(argument.clone()))?;
+                    if scene.is_some() {
+                        return Err(CliError::DuplicateArgument(argument));
+                    }
+                    let parsed = Scene::parse(&value).ok_or_else(|| CliError::InvalidValue {
+                        option: argument.clone(),
+                        value: value.clone(),
+                    })?;
+                    scene = Some(parsed);
+                }
+                "--sampler" => {
+                    let value = args
+                        .next()
+                        .ok_or(CliError::MissingValue(argument.clone()))?;
+                    if sampler.is_some() {
+                        return Err(CliError::DuplicateArgument(argument));
+                    }
+                    let mode = match value.as_str() {
+                        "linear" => SamplerMode::Linear,
+                        "nearest" => SamplerMode::Nearest,
+                        _ => {
+                            return Err(CliError::InvalidValue {
+                                option: argument,
+                                value,
+                            });
+                        }
+                    };
+                    sampler = Some(mode);
+                }
+                "--pixel-perfect" => {
+                    let value = args
+                        .next()
+                        .ok_or(CliError::MissingValue(argument.clone()))?;
+                    if pixel_perfect.is_some() {
+                        return Err(CliError::DuplicateArgument(argument));
+                    }
+                    pixel_perfect = Some(parse_size(&argument, &value)?);
+                }
+                "--size" => {
+                    let value = args
+                        .next()
+                        .ok_or(CliError::MissingValue(argument.clone()))?;
+                    if size.is_some() {
+                        return Err(CliError::DuplicateArgument(argument));
+                    }
+                    size = Some(parse_size(&argument, &value)?);
                 }
                 "--zoom" => {
                     let value = args
@@ -208,7 +372,20 @@ impl Cli {
         if zoom.is_some() && cli.camera == CameraMode::None {
             return Err(CliError::ZoomWithoutCamera);
         }
+        if zoom.is_some() && pixel_perfect.is_some() {
+            return Err(CliError::PixelPerfectWithZoom);
+        }
         cli.zoom = zoom.unwrap_or(DEFAULT_ZOOM);
+        cli.scene = scene.unwrap_or_default();
+        cli.sampler = sampler;
+        cli.pixel_perfect = pixel_perfect;
+        cli.size = size;
+        cli.vsync = !no_vsync;
+        cli.assets = assets.unwrap_or_else(|| PathBuf::from(DEFAULT_ASSETS_DIR));
+        if sprites.is_some() && cli.scene != Scene::Stress {
+            return Err(CliError::SpritesWithoutStress);
+        }
+        cli.sprites = sprites;
 
         // A headless smoke test must not hang forever if the window never
         // presents the requested frames.
@@ -217,6 +394,12 @@ impl Cli {
         }
 
         Ok(cli)
+    }
+
+    /// Sprite count the stress scene will draw.
+    #[must_use]
+    pub fn stress_sprites(&self) -> u32 {
+        self.sprites.unwrap_or(DEFAULT_STRESS_SPRITES)
     }
 
     /// Usage text.
@@ -229,13 +412,25 @@ USAGE:
     demo2d [OPTIONS]
 
 OPTIONS:
-    --frames <N>        Present N frames, then exit cleanly (smoke tests)
-    --capture <PATH>    Write the last presented frame to PATH as a binary PPM
-    --stats             Print frame-time statistics on exit
-    --timeout <SECS>    Abort if N frames are not presented in time (default 30)
-    --camera <MODE>     Camera to render through: none (default) or follow
-    --zoom <FACTOR>     Pixels per world unit when a camera is active (default 1)
-    -h, --help          Print this help
+    --frames <N>          Present N frames, then exit cleanly (smoke tests)
+    --capture <PATH>      Write the last presented frame to PATH as a binary PPM
+    --stats               Print frame-time and draw statistics on exit
+    --timeout <SECS>      Abort if N frames are not presented in time (default 30)
+    --scene <NAME>        classic (default), showcase, or stress
+    --sampler <MODE>      Force linear or nearest sampling scene-wide
+    --assets <DIR>        Asset directory (default games/demo2d/assets)
+    --size <WxH>          Window size in pixels (default 960x600)
+    --camera <MODE>       Camera to render through: none (default) or follow
+    --zoom <FACTOR>       Pixels per world unit when a camera is active (default 1)
+    --pixel-perfect <WxH> Integer-zoom pixel-perfect camera for a WxH virtual screen
+    --no-vsync            Present uncapped, for benchmarking
+    --sprites <N>         Sprite count of the stress scene (default 10000)
+    -h, --help            Print this help
+
+SCENES:
+    classic     The driveable square and corner marker, loaded from atlas.png
+    showcase    Rotation, tint, alpha, nearest vs linear, and star.png alpha
+    stress      N moving sprites drawn from one texture, for benchmarks
 
 CONTROLS:
     WASD or arrow keys   Move the square
@@ -243,6 +438,21 @@ CONTROLS:
     Close the window     Quit
 "
     }
+}
+
+/// Parses a `WxH` size, rejecting missing or zero dimensions.
+fn parse_size(argument: &str, value: &str) -> Result<[u32; 2], CliError> {
+    let invalid = || CliError::InvalidValue {
+        option: argument.to_string(),
+        value: value.to_string(),
+    };
+    let (width, height) = value.split_once(['x', 'X']).ok_or_else(invalid)?;
+    let width = width.parse::<u32>().map_err(|_| invalid())?;
+    let height = height.parse::<u32>().map_err(|_| invalid())?;
+    if width == 0 || height == 0 {
+        return Err(invalid());
+    }
+    Ok([width, height])
 }
 
 #[cfg(test)]
@@ -260,6 +470,13 @@ mod tests {
         assert!(cli.timeout.is_none(), "no frame budget, no timeout");
         assert_eq!(cli.camera, CameraMode::None);
         assert_eq!(cli.zoom, DEFAULT_ZOOM);
+        assert_eq!(cli.scene, Scene::Classic);
+        assert_eq!(cli.sampler, None);
+        assert_eq!(cli.pixel_perfect, None);
+        assert_eq!(cli.size, None);
+        assert!(cli.vsync);
+        assert_eq!(cli.assets, PathBuf::from(DEFAULT_ASSETS_DIR));
+        assert_eq!(cli.stress_sprites(), DEFAULT_STRESS_SPRITES);
     }
 
     #[test]
@@ -297,6 +514,104 @@ mod tests {
     }
 
     #[test]
+    fn scenes_samplers_and_flags_are_recorded() {
+        let cli = parse(&[
+            "--scene",
+            "showcase",
+            "--sampler",
+            "nearest",
+            "--no-vsync",
+            "--size",
+            "800x600",
+            "--assets",
+            "somewhere/assets",
+        ])
+        .expect("valid");
+        assert_eq!(cli.scene, Scene::Showcase);
+        assert_eq!(cli.sampler, Some(SamplerMode::Nearest));
+        assert!(!cli.vsync);
+        assert_eq!(cli.size, Some([800, 600]));
+        assert_eq!(cli.assets, PathBuf::from("somewhere/assets"));
+
+        let cli = parse(&[
+            "--sampler",
+            "linear",
+            "--scene",
+            "stress",
+            "--sprites",
+            "25000",
+        ])
+        .expect("valid");
+        assert_eq!(cli.sampler, Some(SamplerMode::Linear));
+        assert_eq!(cli.scene, Scene::Stress);
+        assert_eq!(cli.stress_sprites(), 25_000);
+    }
+
+    #[test]
+    fn pixel_perfect_is_recorded_and_conflicts_with_zoom() {
+        let cli = parse(&["--pixel-perfect", "320x200"]).expect("valid");
+        assert_eq!(cli.pixel_perfect, Some([320, 200]));
+
+        let cli = parse(&["--camera", "follow", "--pixel-perfect", "240X150"]).expect("valid");
+        assert_eq!(cli.pixel_perfect, Some([240, 150]));
+        assert_eq!(cli.camera, CameraMode::Follow);
+
+        assert_eq!(
+            parse(&[
+                "--camera",
+                "follow",
+                "--zoom",
+                "2",
+                "--pixel-perfect",
+                "320x200"
+            ]),
+            Err(CliError::PixelPerfectWithZoom)
+        );
+    }
+
+    #[test]
+    fn malformed_sizes_are_rejected_with_context() {
+        for value in ["960", "0x600", "960x0", "axb", "960x", "x600", "-960x600"] {
+            assert_eq!(
+                parse(&["--size", value]),
+                Err(CliError::InvalidValue {
+                    option: "--size".to_string(),
+                    value: value.to_string(),
+                }),
+                "size {value}"
+            );
+            assert_eq!(
+                parse(&["--pixel-perfect", value]),
+                Err(CliError::InvalidValue {
+                    option: "--pixel-perfect".to_string(),
+                    value: value.to_string(),
+                }),
+                "pixel-perfect {value}"
+            );
+        }
+        assert_eq!(
+            parse(&["--scene", "stress", "--sprites", "0"]),
+            Err(CliError::InvalidValue {
+                option: "--sprites".to_string(),
+                value: "0".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn sprites_require_the_stress_scene() {
+        assert_eq!(
+            parse(&["--sprites", "100"]),
+            Err(CliError::SpritesWithoutStress)
+        );
+        assert_eq!(
+            parse(&["--scene", "showcase", "--sprites", "100"]),
+            Err(CliError::SpritesWithoutStress)
+        );
+        assert!(parse(&["--scene", "stress", "--sprites", "100"]).is_ok());
+    }
+
+    #[test]
     fn zoom_without_a_camera_is_rejected() {
         assert_eq!(parse(&["--zoom", "2"]), Err(CliError::ZoomWithoutCamera));
         assert_eq!(
@@ -324,6 +639,20 @@ mod tests {
                 "zoom {value}"
             );
         }
+        assert_eq!(
+            parse(&["--scene", "stressy"]),
+            Err(CliError::InvalidValue {
+                option: "--scene".to_string(),
+                value: "stressy".to_string(),
+            })
+        );
+        assert_eq!(
+            parse(&["--sampler", "smooth"]),
+            Err(CliError::InvalidValue {
+                option: "--sampler".to_string(),
+                value: "smooth".to_string(),
+            })
+        );
     }
 
     #[test]
@@ -361,6 +690,10 @@ mod tests {
             Err(CliError::DuplicateArgument("--stats".to_string()))
         );
         assert_eq!(
+            parse(&["--no-vsync", "--no-vsync"]),
+            Err(CliError::DuplicateArgument("--no-vsync".to_string()))
+        );
+        assert_eq!(
             parse(&["--camera", "follow", "--camera", "none"]),
             Err(CliError::DuplicateArgument("--camera".to_string()))
         );
@@ -371,6 +704,18 @@ mod tests {
         assert_eq!(
             parse(&["--zoom"]),
             Err(CliError::MissingValue("--zoom".to_string()))
+        );
+        assert_eq!(
+            parse(&["--scene", "classic", "--scene", "stress"]),
+            Err(CliError::DuplicateArgument("--scene".to_string()))
+        );
+        assert_eq!(
+            parse(&["--assets", "a", "--assets", "b"]),
+            Err(CliError::DuplicateArgument("--assets".to_string()))
+        );
+        assert_eq!(
+            parse(&["--sprites"]),
+            Err(CliError::MissingValue("--sprites".to_string()))
         );
     }
 }
