@@ -8,7 +8,10 @@
 //! - [`FixedTimestep`]: fixed update scheduling with bounded catch-up.
 //! - [`FrameOutcome`]: what happened to a frame presented by a renderer.
 //! - [`Color`]: linear RGBA color.
-//! - [`Camera2d`]: which part of 2D world space is visible.
+//! - [`Camera2d`]: which part of 2D world space is visible, including a
+//!   pixel-perfect mode for pixel art.
+//! - [`UvRect`]: normalized texture-coordinate rectangles, shared by the asset
+//!   and render layers.
 //! - [`init_logging`]: one-shot logging initialization.
 //!
 //! Keeping these types here means `mikan-platform` and `mikan-render` never need
@@ -22,10 +25,12 @@ pub mod error;
 pub mod frame;
 pub mod logging;
 pub mod time;
+pub mod uv;
 
-pub use camera::Camera2d;
+pub use camera::{Camera2d, pixel_perfect_scale};
 pub use config::{Color, EngineConfig};
 pub use error::ConfigError;
 pub use frame::FrameOutcome;
 pub use logging::init_logging;
 pub use time::{FixedTimestep, Time};
+pub use uv::UvRect;

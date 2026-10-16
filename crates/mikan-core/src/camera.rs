@@ -2,7 +2,10 @@
 //!
 //! The camera is deliberately small. It has no rotation, no bounds, and no
 //! smoothing; a camera that follows a player is a few lines of game code, and
-//! one that needs more behavior can be built from this type.
+//! one that needs more behavior can be built from this type. What it does have
+//! is the pair of transformations every 2D game needs — world to screen and
+//! screen to world — and an optional pixel-perfect mode that snaps the camera
+//! to a whole-pixel grid for pixel art.
 //!
 //! World space uses the same axes as the window: `x` grows to the right and
 //! `y` grows downward. That keeps cursor coordinates usable as world
@@ -72,6 +75,83 @@ impl Camera2d {
             (world[1] - self.position[1]) * zoom + viewport[1] * 0.5,
         ]
     }
+
+    /// Maps a point on screen (physical pixels, origin at the top-left corner
+    /// of the viewport) back to world space.
+    ///
+    /// The exact inverse of [`world_to_screen`](Self::world_to_screen) for
+    /// every zoom, including zooms that render as `1.0`.
+    #[must_use]
+    pub fn screen_to_world(self, viewport: [f32; 2], screen: [f32; 2]) -> [f32; 2] {
+        let zoom = self.effective_zoom();
+        [
+            (screen[0] - viewport[0] * 0.5) / zoom + self.position[0],
+            (screen[1] - viewport[1] * 0.5) / zoom + self.position[1],
+        ]
+    }
+
+    /// Returns the same camera with its position moved to a whole physical
+    /// pixel: the world origin maps to an integer screen coordinate and,
+    /// because the offset is a whole number, every other world point keeps its
+    /// fractional position relative to the origin.
+    ///
+    /// With an integer zoom — the zoom [`pixel_perfect`](Self::pixel_perfect)
+    /// selects — this means whole world coordinates land on whole physical
+    /// pixels. The shift is at most half a rendered world unit, so a camera
+    /// that follows something still tracks it, just never sub-pixel.
+    #[must_use]
+    pub fn snap_to_physical_pixels(self, viewport: [u32; 2]) -> Self {
+        let zoom = self.effective_zoom();
+        let half = [viewport[0] as f32 * 0.5, viewport[1] as f32 * 0.5];
+        let snap = |component: f32, half: f32| ((component * zoom - half).round() + half) / zoom;
+        Self {
+            position: [
+                snap(self.position[0], half[0]),
+                snap(self.position[1], half[1]),
+            ],
+            zoom: self.zoom,
+        }
+    }
+
+    /// A pixel-perfect camera: an integer zoom plus a position on the physical
+    /// pixel grid, suitable for pixel art.
+    ///
+    /// The zoom is the largest integer scale at which `virtual_size` (a
+    /// virtual-resolution screen, in virtual pixels) fits inside `viewport`
+    /// (see [`pixel_perfect_scale`]). One virtual pixel — one world unit —
+    /// therefore covers a whole number of physical pixels, and
+    /// [`snap_to_physical_pixels`](Self::snap_to_physical_pixels) keeps the
+    /// grid aligned to the window instead of drifting half a pixel when the
+    /// window size is odd.
+    ///
+    /// The documented limits: the virtual screen is centred to within one
+    /// physical pixel (there is no letterbox fill, the clear color shows
+    /// through); a viewport smaller than `virtual_size` renders at scale 1
+    /// with the same centered behavior; and only the camera is snapped — a
+    /// game that wants its sprites on the virtual grid must place them on it
+    /// (for example by rounding positions to `1 / scale`).
+    #[must_use]
+    pub fn pixel_perfect(position: [f32; 2], viewport: [u32; 2], virtual_size: [u32; 2]) -> Self {
+        let zoom = pixel_perfect_scale(viewport, virtual_size) as f32;
+        Self::new(position, zoom).snap_to_physical_pixels(viewport)
+    }
+}
+
+/// The largest integer scale at which a `virtual_size` pixel grid fits inside
+/// `viewport`, at least `1`.
+///
+/// This is the zoom a pixel-perfect view uses: one virtual pixel covers
+/// exactly `scale` physical pixels, never a fractional number of them. A
+/// degenerate virtual size (a zero dimension) or a viewport smaller than the
+/// virtual grid both fall back to `1`, so the result is always a usable zoom.
+#[must_use]
+pub fn pixel_perfect_scale(viewport: [u32; 2], virtual_size: [u32; 2]) -> u32 {
+    if virtual_size[0] == 0 || virtual_size[1] == 0 {
+        return 1;
+    }
+    (viewport[0] / virtual_size[0])
+        .min(viewport[1] / virtual_size[1])
+        .max(1)
 }
 
 #[cfg(test)]
@@ -144,5 +224,89 @@ mod tests {
             );
         }
         assert_eq!(Camera2d::new([0.0, 0.0], 2.5).effective_zoom(), 2.5);
+    }
+
+    #[test]
+    fn screen_to_world_inverts_world_to_screen() {
+        let worlds = [[0.0, 0.0], [100.0, 100.0], [-250.0, 480.0], VIEWPORT];
+        for camera in [
+            Camera2d::new([0.0, 0.0], 1.0),
+            Camera2d::new([120.0, -40.0], 2.5),
+            Camera2d::new([-500.0, 900.0], 0.35),
+            Camera2d::new([10.0, 10.0], 0.0),
+        ] {
+            for world in worlds {
+                let screen = camera.world_to_screen(VIEWPORT, world);
+                close(camera.screen_to_world(VIEWPORT, screen), world);
+            }
+        }
+    }
+
+    #[test]
+    fn pixel_perfect_scale_is_the_largest_fitting_integer() {
+        assert_eq!(pixel_perfect_scale([960, 600], [240, 150]), 4);
+        assert_eq!(pixel_perfect_scale([960, 600], [320, 200]), 3);
+        assert_eq!(
+            pixel_perfect_scale([960, 600], [320, 240]),
+            2,
+            "limited by the tighter axis (600 / 240 = 2)"
+        );
+        assert_eq!(pixel_perfect_scale([961, 601], [240, 150]), 4);
+        assert_eq!(
+            pixel_perfect_scale([100, 100], [240, 150]),
+            1,
+            "a viewport smaller than the virtual grid still renders at 1:1"
+        );
+        assert_eq!(
+            pixel_perfect_scale([960, 600], [0, 150]),
+            1,
+            "a degenerate virtual size falls back to 1"
+        );
+        assert_eq!(pixel_perfect_scale([960, 600], [960, 600]), 1);
+    }
+
+    #[test]
+    fn pixel_perfect_camera_puts_whole_world_coordinates_on_whole_pixels() {
+        for viewport in [[960u32, 600u32], [961, 601], [959, 599], [1920, 1080]] {
+            for virtual_size in [[240u32, 150u32], [320, 200], [480, 300], [64, 64]] {
+                let camera = Camera2d::pixel_perfect([120.4, 75.9], viewport, virtual_size);
+                let expected_zoom = pixel_perfect_scale(viewport, virtual_size) as f32;
+                assert_eq!(camera.effective_zoom(), expected_zoom);
+                let viewport_f = [viewport[0] as f32, viewport[1] as f32];
+                for world in [[0.0, 0.0], [1.0, 1.0], [10.0, 37.0], [-5.0, 4.0]] {
+                    let screen = camera.world_to_screen(viewport_f, world);
+                    for axis in 0..2 {
+                        let fraction = screen[axis] - screen[axis].round();
+                        assert!(
+                            fraction.abs() < 1e-3,
+                            "viewport {viewport:?} virtual {virtual_size:?}: world {world:?} \
+                             landed on {screen:?}, not a whole pixel"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn pixel_perfect_snapping_moves_the_camera_by_at_most_half_a_virtual_pixel() {
+        let requested = [120.4, 75.9];
+        let camera = Camera2d::pixel_perfect(requested, [961, 601], [240, 150]);
+        for (axis, (snapped, requested)) in camera.position.iter().zip(requested).enumerate() {
+            let shift = (snapped - requested).abs();
+            assert!(
+                shift <= 0.5 / camera.effective_zoom() + 1e-4,
+                "axis {axis} moved by {shift}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_camera_already_on_the_grid_is_unchanged_by_snapping() {
+        // With zoom 4, 1/4 world units are whole physical pixels; the snapped
+        // position of a request already on that grid is the request itself.
+        let requested = [120.25, 75.25];
+        let camera = Camera2d::pixel_perfect(requested, [960, 600], [240, 150]);
+        close(camera.position, requested);
     }
 }
