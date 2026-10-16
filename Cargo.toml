@@ -15,6 +15,7 @@ categories = ["game-engines", "graphics", "game-development"]
 [workspace.dependencies]
 # Engine crates
 mikan = { path = "crates/mikan", version = "0.1.0" }
+mikan-assets = { path = "crates/mikan-assets", version = "0.1.0" }
 mikan-core = { path = "crates/mikan-core", version = "0.1.0" }
 mikan-platform = { path = "crates/mikan-platform", version = "0.1.0" }
 mikan-render = { path = "crates/mikan-render", version = "0.1.0" }
@@ -24,8 +25,11 @@ mikan-render = { path = "crates/mikan-render", version = "0.1.0" }
 bytemuck = { version = "1.25", features = ["derive"] }
 env_logger = { version = "0.11.11", default-features = false, features = ["auto-color", "humantime"] }
 log = "0.4.34"
+png = "0.18.1"
 pollster = "1.0"
 raw-window-handle = "0.6.2"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
 thiserror = "2.0"
 wgpu = "30.0.1"
 winit = "0.30.13"
