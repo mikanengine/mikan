@@ -42,8 +42,11 @@ if command -v xvfb-run >/dev/null 2>&1; then
 
         echo "==> camera verification: follow camera and zoom under Xvfb"
         RUST_LOG="${RUST_LOG:-info}" xvfb-run -a bash scripts/verify_camera.sh
+
+        echo "==> ecs verification: player entity, scheduled systems, fixed steps"
+        RUST_LOG="${RUST_LOG:-info}" xvfb-run -a bash scripts/verify_ecs.sh
     else
-        echo "==> skipping the input and camera verification: xdotool is not installed"
+        echo "==> skipping the input, camera, and ecs verification: xdotool is not installed"
     fi
 
     echo "==> showcase verification: rotation, tint, alpha, samplers, PNG alpha"

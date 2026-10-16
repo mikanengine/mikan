@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # Shared helpers for the X11 end-to-end verification scripts (verify_input.sh,
-# verify_camera.sh, verify_showcase.sh, verify_stress.sh,
+# verify_camera.sh, verify_ecs.sh, verify_showcase.sh, verify_stress.sh,
 # verify_pixel_perfect.sh, verify_assets.sh). Sourced, not executed directly.
 #
 # The sourcing script must cd to the repository root, set DEMO_BIN and

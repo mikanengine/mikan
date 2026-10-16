@@ -89,6 +89,9 @@ jobs:
       - name: Verify the 2D camera end to end
         run: xvfb-run -a bash scripts/verify_camera.sh
 
+      - name: Verify the ECS end to end
+        run: xvfb-run -a bash scripts/verify_ecs.sh
+
       - name: Verify the showcase scene end to end
         run: xvfb-run -a bash scripts/verify_showcase.sh
 
