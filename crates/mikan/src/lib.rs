@@ -15,8 +15,9 @@
 //! The facade does not replace the layers. The event loop, timing, input, and
 //! window lifecycle remain in [`mikan_platform`], driven by the same runner an
 //! application can still use directly through [`mikan_platform::App`]; the
-//! engine crates stay reachable as [`mikan_core`], [`mikan_platform`], and
-//! [`mikan_render`] for anything this crate does not re-export.
+//! engine crates stay reachable as [`mikan_core`], [`mikan_platform`],
+//! [`mikan_render`], and [`mikan_assets`] for anything this crate does not
+//! re-export.
 //!
 //! # Example
 //!
@@ -77,17 +78,20 @@ pub use crate::runner::run;
 
 // The layers stay reachable for anything the curated re-exports below do not
 // cover.
+pub use mikan_assets;
 pub use mikan_core;
 pub use mikan_platform;
 pub use mikan_render;
 
 // Curated re-exports so that an application needs no other dependency: the
-// vocabulary of a frame, the platform context, and the renderer entry points.
+// vocabulary of a frame, the platform context, asset loading, and the renderer
+// entry points.
+pub use mikan_assets::{Image, ImageError, SheetError, SheetFrame, SpriteSheet};
 pub use mikan_core::{Camera2d, Color, EngineConfig, FrameOutcome, Time, init_logging};
 pub use mikan_platform::{
     AppContext, InputState, KeyCode, PhysicalKey, PhysicalSize, PlatformError,
 };
 pub use mikan_render::{
-    CaptureBuffer, Frame, RenderError, RenderSettings, Renderer, Sprite, Texture,
-    TextureDescriptor, UvRect,
+    CaptureBuffer, Frame, FrameStats, RenderError, RenderSettings, Renderer, SamplerMode, Sprite,
+    Texture, TextureDescriptor, TextureEncoding, UvRect,
 };

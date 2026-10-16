@@ -13,6 +13,7 @@ categories.workspace = true
 workspace = true
 
 [dependencies]
+mikan-assets.workspace = true
 mikan-core.workspace = true
 mikan-platform.workspace = true
 mikan-render.workspace = true
