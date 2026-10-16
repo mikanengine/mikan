@@ -65,17 +65,42 @@ implements `mikan::Game` and depends on no other engine crate. The facade
 creates the renderer, forwards resizes, and translates errors; see
 [`ARCHITECTURE.md`](ARCHITECTURE.md) §2 for the layer split.
 
-The demo renders a small procedural texture atlas (a player tile and a marker
-tile) and can render through a camera:
+The demo loads its sprites from `games/demo2d/assets` — an `atlas.png` with a
+committed `atlas.json` sprite sheet and a `star.png` with transparent corners —
+decoded by `mikan-assets` and uploaded as sRGB textures at startup. A missing,
+corrupt, or incomplete asset set stops the demo with a readable error before
+the first frame; `--assets DIR` loads a different directory. The files are
+generated (and checked in CI) by:
 
 ```bash
-cargo run -p demo2d --release -- --camera follow        # camera tracks the player
+python3 scripts/generate_assets.py          # rewrite games/demo2d/assets
+python3 scripts/generate_assets.py --check  # fail if the committed files differ
+```
+
+Three scenes share the loaded assets:
+
+```bash
+cargo run -p demo2d --release -- --scene classic    # default: drive the square
+cargo run -p demo2d --release -- --scene showcase   # one feature per fixed position
+cargo run -p demo2d --release -- --scene stress --sprites 10000 --no-vsync --stats
+```
+
+and the camera options are:
+
+```bash
+cargo run -p demo2d --release -- --camera follow            # camera tracks the player
 cargo run -p demo2d --release -- --camera follow --zoom 2   # zoomed in 2x
+cargo run -p demo2d --release -- --pixel-perfect 240x150    # integer-zoomed pixel-perfect view
+cargo run -p demo2d --release -- --scene showcase --sampler nearest  # force one sampler scene-wide
 ```
 
 `--zoom` requires a camera; it is rejected on its own rather than silently
-ignored. The default is `--camera none`, which renders in pixel space exactly as
-the pre-camera milestone did.
+ignored, and it cannot be combined with `--pixel-perfect` (the zoom is derived
+from the virtual resolution there). The default is `--camera none`, which
+renders in pixel space exactly as the pre-camera milestone did. `--pixel-perfect
+WxH` derives the largest integer zoom at which a WxH virtual screen fits the
+window (4x for 240x150 in the default 960x600 window) and snaps the camera to
+the physical pixel grid; its exact contract is documented in ADR 0008.
 
 ## Quality gates
 
@@ -95,9 +120,10 @@ Or run all of them, plus the headless runtime checks, with one command:
 ./scripts/verify.sh
 ```
 
-The script also runs the headless smoke test, the capture, input, and camera
-verification below when `xvfb-run` (and, for the latter two, `xdotool`) is
-available, and skips them with a notice when it is not.
+The script also runs the generator check and the headless smoke test, capture,
+input, camera, showcase, stress, pixel-perfect, and asset verification below
+when `xvfb-run` is available, and skips the display-dependent ones with a
+notice when it is not.
 
 Logging is controlled with the standard `RUST_LOG` environment variable:
 
@@ -122,11 +148,13 @@ xvfb-run -a cargo run -p demo2d --release -- \
 What this proves, in order:
 
 1. The window is created and the event loop runs under a virtual X server.
-2. `wgpu` finds an adapter and creates a device (with `lavapipe`, a CPU device).
-3. The swap chain is configured, 120 frames are rendered and presented with no
+2. The demo loads its sprite assets from `games/demo2d/assets` (run commands
+   from the repository root, or pass `--assets DIR`).
+3. `wgpu` finds an adapter and creates a device (with `lavapipe`, a CPU device).
+4. The swap chain is configured, 120 frames are rendered and presented with no
    unrecovered surface condition.
-4. `--capture` copies the last frame back to CPU memory and writes it.
-5. The process exits with status 0 — and with a non-zero status, after the
+5. `--capture` copies the last frame back to CPU memory and writes it.
+6. The process exits with status 0 — and with a non-zero status, after the
    timeout, if any of the above fails.
 
 `--frames` implies `--timeout 30` so a smoke test cannot hang forever. A failure
@@ -204,6 +232,80 @@ Both checks find the square by colour (`scripts/verify_camera.py`), so they also
 exercise the texture path: the player tile has a darker border and a diagonal
 highlight, and a diagonal edge cannot come from an axis-aligned flat rectangle.
 
+### Verifying the showcase scene
+
+`--scene showcase` draws eight sprites at fixed positions, one per sprite
+feature, so a single captured frame verifies them all:
+
+```bash
+xvfb-run -a bash scripts/verify_showcase.sh
+```
+
+The script checks the demo log (the assets loaded; 8 sprites in 4 batches and 4
+draw calls, one per texture/sampler pair) and then the pixels
+(`scripts/verify_showcase.py`): the plain tile's base colour arrives unchanged,
+the 45-degree tile reaches pixels an unrotated square cannot paint while its
+unrotated box corner is clear, the tinted tile matches the linear tint multiply,
+the 0.4-alpha tile blends with the clear color, the linear checker scanline
+contains intermediate grays where the nearest one contains only black and
+white, and the star is yellow in the middle and transparent at the corners,
+where its backdrop shows through.
+
+### Verifying batching at scale
+
+```bash
+xvfb-run -a bash scripts/verify_stress.sh                    # 1000 sprites (CI default)
+SPRITES=10000 xvfb-run -a bash scripts/verify_stress.sh      # the full benchmark scene
+```
+
+The script runs the stress scene, requires the render statistics line to report
+exactly one batch and one draw call for the requested sprite count, and checks
+that the captured frame is mostly covered in the player tile's colours
+(`scripts/verify_stress.py`) — so the sprites were really rasterized, not
+merely counted.
+
+### Verifying pixel-perfect mode
+
+```bash
+xvfb-run -a bash scripts/verify_pixel_perfect.sh
+```
+
+Runs `--pixel-perfect 240x150` in the default 960x600 window, requires the log
+to report integer zoom 4, and checks in the capture
+(`scripts/verify_pixel_perfect.py`) that the player square is exactly 384 px
+(96 virtual pixels times 4) with every bounding-box edge on a multiple of 4.
+With a fractional camera position the quad's edges would land between pixels
+and the warm bounding box would break that alignment, so this is what "the
+whole virtual grid is aligned to the physical grid" means in an image.
+
+### Verifying asset failure modes
+
+```bash
+xvfb-run -a bash scripts/verify_assets.sh
+```
+
+First runs the generator check, then runs the demo against a missing asset
+directory, a sheet whose texture is not a PNG, and a sheet without the
+`player` frame. Each run must exit non-zero with the specific message
+("could not read", "could not decode PNG data", `has no frame "player"`)
+instead of rendering a broken frame.
+
+### Benchmarking the sprite pipeline
+
+```bash
+xvfb-run -a bash scripts/bench_sprites.sh               # 100/1000/10000 sprites, 300 frames
+xvfb-run -a bash scripts/bench_sprites.sh "1000 10000" 120
+```
+
+For each sprite count and window size (960x600 and 320x200 by default) the
+script runs the stress scene with vsync off for a fixed frame budget, records
+the demo's own per-run statistics under `artifacts/bench/`, and prints a table
+(window, sprites, batches, draw calls, frames, mean/p50/p95/max, fps). Two
+window sizes are measured because they carry different fill costs. Quote
+results only with the device named and labelled as hardware or software
+rasterizer; `docs/STATUS.md` holds the current recorded numbers and their
+caveats.
+
 ### Frame-time statistics
 
 `--stats` prints mean, p50, p95, and max frame times and the implied average
@@ -216,9 +318,12 @@ frame rate. Read them with these caveats:
   (about 16.7 ms at 60 Hz). That measures the compositor, not the engine.
 
 For engine cost measurements, use a real GPU, disable vsync
-(`EngineConfig::vsync`), hold the scene identical across runs, and report the
-hardware, driver, resolution, and frame count next to the numbers. Never quote a
-number produced on a different machine as if it applied to this one.
+(`EngineConfig::vsync` or `--no-vsync`), hold the scene identical across runs
+(`--scene stress --sprites N` is deterministic), and report the hardware,
+driver, resolution, and frame count next to the numbers — the two window sizes
+of `scripts/bench_sprites.sh` exist exactly so fill cost and per-sprite cost
+can be told apart. Never quote a number produced on a different machine as if
+it applied to this one.
 
 ## Repository conventions
 

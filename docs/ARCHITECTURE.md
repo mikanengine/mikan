@@ -36,6 +36,7 @@ as not implemented.
 
 ```
 crates/mikan-core        no dependencies on windowing or graphics
+crates/mikan-assets      PNG decoding and sprite-sheet metadata; no graphics
 crates/mikan-platform    winit is its only OS dependency; no graphics
 crates/mikan-render      wgpu is its only graphics dependency; no event handling
 crates/mikan             facade: one lifecycle that composes the platform and render layers
@@ -55,10 +56,34 @@ without pulling in the platform stack.
   of fixed steps plus an interpolation alpha.
 - `FrameOutcome` — the shared result of a frame: `Presented`, `Skipped`, `Idle`.
 - `Camera2d` — position plus zoom, with `world_to_screen` as the reference
-  transformation and a sanitizing `effective_zoom`; no graphics dependency, so
-  gameplay math and rendering share one definition.
+  transformation and a sanitizing `effective_zoom`; `pixel_perfect` derives an
+  integer zoom and snaps the camera to the physical pixel grid for pixel art.
+  No graphics dependency, so gameplay math and rendering share one definition.
+- `UvRect` — a normalized texture region with the half-texel `inset` atlas
+  sampling needs; shared vocabulary rather than a render-only type.
 - `Color` — linear RGBA, deliberately independent of `wgpu::Color`.
 - `init_logging` — one-shot `env_logger` initialization honoring `RUST_LOG`.
+
+### `mikan-assets`
+
+CPU-side asset loading: files in, pixels and metadata out. It depends on
+`mikan-core` only — no window, no device, no `wgpu` — so decoding is testable
+(and usable) without a GPU.
+
+- `Image` — a PNG decoded to the engine's canonical representation (RGBA8, top
+  row first, straight alpha, stored bytes kept), with per-side dimension and
+  allocation limits and descriptive `ImageError`s. The `png` crate does the
+  bit-level decoding; Mikan owns normalization, limits, and errors.
+- `SpriteSheet` / `SheetFrame` — a documented subset of Aseprite's JSON export:
+  named pixel rectangles plus optional duration and pivot, validated at load
+  (duplicates, zero sizes, out-of-bounds rectangles, pivots, rotated/trimmed
+  frames). `SheetFrame::uv` converts a frame to an inset `UvRect` so linear
+  sampling never reads a neighbouring frame's texels. The format is documented
+  in `docs/sprite-sheets.md`.
+
+The split is deliberate: the render layer accepts pixels (`TextureDescriptor`)
+and knows nothing about files; the application connects the two, and chooses
+the texture encoding (`Linear` for procedural data, `Srgb` for standard PNGs).
 
 ### `mikan-platform`
 
@@ -86,11 +111,15 @@ Everything between a window handle and a presented frame.
   windows, SDL windows, and anything else implementing `raw-window-handle`
   satisfy it.
 - `Sprite` / `UvRect` / `Frame` — a rectangle in world space, flat or textured
-  through an atlas-ready UV rectangle, and the frame description: clear color,
-  optional camera, and the sprites to draw.
-- `Texture` / `TextureDescriptor` — textures uploaded from linear RGBA8 pixels
-  and validated before any GPU resource is created; a texture is usable only
-  with the `Renderer` that created it.
+  through an atlas-ready UV rectangle, with optional rotation and a per-sprite
+  sampler mode, and the frame description: clear color, optional camera, and
+  the sprites to draw. `FrameStats` reports what the last frame submitted
+  (sprites, batches, draw calls).
+- `Texture` / `TextureDescriptor` / `TextureEncoding` — textures uploaded from
+  tightly packed RGBA8 pixels and validated before any GPU resource is created;
+  the encoding (`Linear` default, `Srgb` for standard PNG bytes) is declared at
+  upload, and the GPU decodes on sample. A texture is usable only with the
+  `Renderer` that created it.
 - `CaptureBuffer` — optional single-frame readback (RGBA8) used by tests and
   tooling.
 
@@ -111,13 +140,18 @@ created, driven, and torn down.
   `init` ran, and translates game errors into `PlatformError`. The event loop
   itself remains `mikan_platform::run`; the facade adds one adapter, not a
   second runtime.
+- Curated re-exports of all four layers, including `mikan_assets`, so an
+  application needs one dependency for the common case.
 
 ### `games/demo2d`
 
 The application. It implements the facade's `Game` trait, owns gameplay state
-(`Square`), and contains the command-line interface, the procedural atlas, the
-PPM writer, and the frame-time statistics. It depends on `mikan` only; the
-platform and render layers reach it through the facade's re-exports.
+(`Square`), and contains the command-line interface, three scenes (classic,
+showcase, stress), asset loading and upload, the PPM writer, and the
+frame-time and draw statistics. Its assets (`atlas.png`, `atlas.json`,
+`star.png`) are committed files produced by `scripts/generate_assets.py` and
+loaded through `mikan-assets` at startup. It depends on `mikan` only; the
+other layers reach it through the facade's re-exports.
 
 ## 3. Dependency direction
 
@@ -126,14 +160,14 @@ platform and render layers reach it through the facade's re-exports.
                  |  mikan-core   |   (no deps beyond log/env_logger/thiserror)
                  +-------+-------+
                          |
-         +---------------+---------------+
-         |                               |
- +-------+---------+            +--------+--------+
- | mikan-platform  |            |  mikan-render   |
- | (winit)         |            |  (wgpu)         |
- +-------+---------+            +--------+--------+
-         |                               |
-         +---------------+---------------+
+     +-------------------+-------------------+
+     |                   |                   |
++----+-----+     +-------+-------+    +------+-------+
+| mikan-   |     | mikan-assets  |    | mikan-render |
+| platform |     | (png, serde)  |    | (wgpu)       |
++----+-----+     +-------+-------+    +------+-------+
+     |                   |                   |
+     +-------------------+-------------------+
                          |
                     +----+----+
                     |  mikan  |   (facade: Game, Engine, run)
@@ -147,8 +181,11 @@ platform and render layers reach it through the facade's re-exports.
 Rules that keep this acyclic and comprehensible:
 
 - `mikan-core` depends on nothing in the workspace.
-- `mikan-platform` and `mikan-render` never depend on each other.
-- `mikan` may depend on all three; it re-exports them so applications need one
+- `mikan-assets` depends on `mikan-core` only: no windowing, no graphics.
+- `mikan-platform` and `mikan-render` never depend on each other, and
+  `mikan-render` does not depend on `mikan-assets` — the application glues
+  decoded pixels into `TextureDescriptor`.
+- `mikan` may depend on all four; it re-exports them so applications need one
   dependency. Applications that need custom wiring can still use
   `mikan_platform::App` directly.
 - No crate depends on an application.
@@ -271,31 +308,45 @@ frames report `Idle` until a usable size returns.
 
 ### Sprite rendering
 
-The geometry primitive is `Sprite`: center, size, color, an optional texture,
-and a UV rectangle, all in world units. A frame renders through an optional
-`Camera2d`; without one, `Camera2d::pixel_space` maps world units 1:1 to
-physical pixels with the origin at the top-left corner, reproducing the
-pre-camera behavior exactly. Every frame is drawn with:
+The geometry primitive is `Sprite`: center, size, color, rotation, an optional
+texture with a UV rectangle, and a sampler mode, all in world units. A frame
+renders through an optional `Camera2d`; without one, `Camera2d::pixel_space`
+maps world units 1:1 to physical pixels with the origin at the top-left
+corner. `Camera2d::pixel_perfect` instead derives an integer zoom from a
+virtual screen size and snaps the camera so whole world coordinates land on
+whole physical pixels. Every frame is drawn with:
 
 - one static six-vertex unit square shared by all sprites,
-- one instance per sprite (48 bytes: `center`, `size`, `color`, `uv`),
+- one instance per sprite (56 bytes: `center`, `size`, rotation as
+  `(cos, sin)`, `color`, and the UV rectangle),
 - one instanced draw call per **consecutive run of sprites that share a
-  texture** — painter order equals submission order, sprites are never
-  reordered, and solid sprites share a 1×1 white fallback texture,
+  texture and a sampler mode** — painter order equals submission order,
+  sprites are never reordered, and solid sprites share a 1×1 white fallback
+  texture,
 - one camera uniform (a `mat4x4` view/projection matrix built from
-  `Camera2d`), and one texture bind group per texture.
+  `Camera2d`), and, per texture, one bind group per `SamplerMode` (linear and
+  nearest), so filtering is a batching decision rather than a pipeline switch.
+
+`Renderer::last_frame_stats()` reports `FrameStats { sprites, batches,
+draw_calls }` for the last submitted frame, which is how the verification
+scripts check that 10,000 sprites really batch into one draw call instead of
+asserting it in prose.
 
 The instance buffer grows geometrically when a frame needs more instances than
 it currently holds. Texture descriptors are validated (non-zero, within
 `max_texture_dimension_2d`, exact data length) before any GPU resource is
-created, and textures are linear RGBA8 with a single mip level, uploaded from
-memory — there is no image loader yet.
+created. Textures are tightly packed RGBA8 with a single mip level, uploaded
+from memory, and carry a declared `TextureEncoding`: `Linear` (the default,
+exact backward compatibility with procedural data) or `Srgb` for standard PNG
+bytes, which the GPU decodes on sample. Decoding files is `mikan-assets`'
+job; the renderer never reads a path.
 
 ## 7. Error-handling strategy
 
 | Layer | Error type | Policy |
 | --- | --- | --- |
 | `mikan-core` | `ConfigError` | Validation at startup; no runtime panics for bad input |
+| `mikan-assets` | `ImageError`, `SheetError` | Files are validated at load: limits, encodings, rectangles, pivots; a bad asset is an error before it reaches the GPU |
 | `mikan-platform` | `PlatformError` (+ `PlatformError::app` for application errors) | Fatal errors stop the loop, run `shutdown`, and reach `main` |
 | `mikan-render` | `RenderError` | Recoverable swap-chain states are *not* errors; unrecoverable ones are |
 | `mikan` | `Game::Error` (bounded by `From<RenderError>`) | Renderer operations return `RenderError` so `?` composes; renderer startup failures are labeled and wrapped with `PlatformError::app` |
@@ -348,17 +399,19 @@ These are seams the current design leaves open. None of them are implemented.
 - **Multi-window applications.** The facade owns one window and one renderer per
   process; an application that needs several windows composes the layers
   directly through `mikan_platform::App`, which remains public for this reason.
-- **Sprite sorting / batching heuristics.** `plan_batches` currently merges
-  only consecutive sprites sharing a texture; a sorter that groups across
-  submission order (z layers, texture keys) is a local change once painter
-  order can be expressed independently of submission order.
-- **Image loading.** `Renderer::create_texture` takes decoded linear RGBA8
-  pixels; an asset step that decodes files (and decides between sRGB and linear
-  formats) plugs in front of it without changing the renderer.
+- **Sprite sorting / batching heuristics.** `plan_batches` merges only
+  consecutive sprites sharing a texture and sampler mode; a sorter that groups
+  across submission order (z layers, texture keys) is a local change once
+  painter order can be expressed independently of submission order.
+- **Asset pipeline.** `mikan-assets` decodes files one at a time; atlas
+  packing, hot reload, and background loading are future work that plugs in
+  front of `Renderer::create_texture` without changing the renderer.
 - **ECS-lite.** `App::update` is the natural place to drive systems; the fixed
   timestep already provides a deterministic schedule.
 - **Frame graph / passes.** `render_frame` is the single place where pass
   recording happens; splitting it into ordered passes is a local change.
 - **Native modules.** `mikan-core` is the intended home for safe wrappers around
   small C modules (for example an arena allocator), behind the rules in
-  `ffi.md`.
+  `ffi.md`. ADR 0008 records why the 2D sprite-rendering milestone added none:
+  its benchmark points at rasterization throughput, not at a boundary Rust
+  expresses badly.

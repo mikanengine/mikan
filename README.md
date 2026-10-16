@@ -8,9 +8,11 @@ Mikan 蜜柑 — a small, modular game engine. 2D first, then 3D. Rust at the co
 ## What works today
 
 This is an early but real vertical slice: a windowed application that renders at
-vsync, draws flat or textured sprites through a minimal 2D camera, reads the
-keyboard, runs a fixed-timestep simulation, handles resize and every recoverable
-swap-chain condition, and exits cleanly.
+vsync, loads PNG sprites and sprite-sheet metadata from disk, draws textured
+(rotated, tinted, alpha-blended) sprites with per-sprite sampling, through a
+minimal 2D camera with an optional pixel-perfect mode, reads the keyboard, runs
+a fixed-timestep simulation, handles resize and every recoverable swap-chain
+condition, reports draw statistics, and exits cleanly.
 
 | Capability | State |
 | --- | --- |
@@ -19,12 +21,17 @@ swap-chain condition, and exits cleanly.
 | Keyboard/mouse state with press/release edges | implemented, unit-tested |
 | Clamped frame timing | implemented, unit-tested |
 | `wgpu` device/surface management, resize, surface recovery | implemented, runtime-verified |
-| Clear color + sprites (flat or textured, one instanced draw call per texture run) | implemented, runtime-verified |
-| Textures uploaded from linear RGBA8 data, atlas UV rectangles | implemented, runtime-verified |
+| Clear color + sprites (flat or textured, one instanced draw call per texture/sampler run) | implemented, runtime-verified |
+| PNG loading to RGBA8 and named sprite-sheet frames (Aseprite JSON subset) | implemented, runtime-verified |
+| Texture uploads with declared encoding (linear or sRGB) | implemented, runtime-verified |
+| Rotation, tinting, and alpha blending | implemented, runtime-verified |
+| Per-sprite sampling (linear or nearest) | implemented, runtime-verified |
 | Minimal 2D camera (position + zoom, follow or pixel space) | implemented, runtime-verified |
+| Pixel-perfect mode (integer zoom, physical-pixel snapping) | implemented, runtime-verified |
 | Engine facade (`mikan`): one lifecycle for renderer creation, resize, errors | implemented, runtime-verified |
+| Frame statistics (sprites/batches/draw calls) and a sprite benchmark | implemented, measured |
 | Offscreen frame capture (PPM) for tests and tooling | implemented, runtime-verified |
-| 3D, audio, physics, ECS, asset loading | **not implemented** — see the roadmap |
+| 3D, audio, physics, ECS, hot reload | **not implemented** — see the roadmap |
 
 ## Quick start
 
@@ -34,9 +41,16 @@ cd mikan
 cargo run -p demo2d --release
 ```
 
-The demo opens a 960x600 window with a dark background, an orange textured
-square, and a blue marker in the corner. Both are tiles of a small atlas the
-demo generates in code; nothing is loaded from disk.
+The demo opens a 960x600 window and loads its sprites from
+`games/demo2d/assets` — a committed PNG atlas with named frames, loaded through
+`mikan-assets` and uploaded as sRGB textures. Three scenes are available:
+
+```bash
+cargo run -p demo2d --release                          # classic: drive the square
+cargo run -p demo2d --release -- --scene showcase      # rotation, tint, alpha, samplers, PNG alpha
+cargo run -p demo2d --release -- --scene stress --sprites 10000   # 10,000-sprite benchmark scene
+cargo run -p demo2d --release -- --pixel-perfect 240x150          # integer-zoomed pixel-perfect view
+```
 
 | Input | Action |
 | --- | --- |
@@ -46,33 +60,36 @@ demo generates in code; nothing is loaded from disk.
 
 The square is simulated at a fixed 120 Hz and drawn interpolated, so motion
 stays smooth even when the display refresh rate does not divide the simulation
-rate evenly. See [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md) for the full
-command reference, including headless smoke-test mode.
+rate evenly. `cargo run -p demo2d -- --help` lists every option; see
+[`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md) for the full command reference,
+including headless smoke-test and benchmark modes.
 
 ## Workspace layout
 
 ```
 crates/mikan            engine facade: the application lifecycle that composes platform and rendering
 crates/mikan-core       configuration, time, fixed timestep, logging, 2D camera, shared types
+crates/mikan-assets     PNG decoding and sprite-sheet metadata (CPU only, no graphics)
 crates/mikan-platform   window lifecycle, input state, application runner (winit)
 crates/mikan-render     device and swap chain management, sprites and textures, capture (wgpu)
 games/demo2d            playable 2D demo built on the engine runtime
-docs/                   architecture, development guide, FFI policy, ADRs
+docs/                   architecture, development guide, FFI policy, sprite-sheet format, ADRs
 ```
 
 Dependency direction is one-way and enforced by the manifests:
 
 ```
-                         mikan-core
-                         ^        ^
-                         |        |
-               mikan-platform   mikan-render
-                         ^        ^
-                          \      /
-                            mikan          (facade: Game, Engine, run)
-                              ^
-                              |
-                           demo2d          (depends only on mikan)
+                 mikan-core
+                 ^    ^   ^
+                 |    |   |
+      mikan-assets   |   mikan-render        (assets and rendering are siblings:
+                 ^   |   ^                   decoding never touches the GPU,
+                 |   |   |                   the renderer never reads a file)
+                  \  |  /
+                    mikan                   (facade: Game, Engine, run)
+                      ^
+                      |
+                   demo2d                   (depends only on mikan)
 ```
 
 `mikan-platform` and `mikan-render` are siblings: the renderer knows nothing
@@ -88,19 +105,27 @@ still meet directly in applications that wire the layers by hand. See
   It creates the renderer, forwards resizes, translates errors, and re-exports
   the layers' common types.
 - **`mikan-core`** — platform-independent fundamentals: `EngineConfig`, `Color`,
-  `Time`, `FixedTimestep`, `FrameOutcome`, `Camera2d`, logging initialization.
+  `Time`, `FixedTimestep`, `FrameOutcome`, `Camera2d` (including the
+  pixel-perfect constructor), `UvRect`, logging initialization.
+- **`mikan-assets`** — `Image` (PNG decoded to RGBA8 with limits and descriptive
+  errors) and `SpriteSheet` (named frames from a documented Aseprite JSON
+  subset, validated and converted to inset UV rectangles). No window, no
+  device.
 - **`mikan-platform`** — the app lifecycle (`App`/`AppContext`), input snapshot
   (`InputState`), and the window runner. It owns the only windowing dependency.
 - **`mikan-render`** — `Renderer`: instance, adapter, device, queue, swap chain,
-  sprites and textures (atlas-ready UV rectangles), the camera matrix, and
-  optional frame readback. It owns the only graphics dependency.
+  sprites (rotation, tint, alpha, per-sprite sampling) and textures
+  (atlas-ready UV rectangles, declared encoding), the camera matrix, frame
+  statistics, and optional frame readback. It owns the only graphics
+  dependency.
 
 ## Documentation
 
 | Document | Contents |
 | --- | --- |
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | Goals, crate responsibilities, lifecycle, error strategy |
-| [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md) | Prerequisites, build, test, run, headless verification |
+| [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md) | Prerequisites, build, test, run, headless verification, benchmark protocol |
+| [`docs/sprite-sheets.md`](docs/sprite-sheets.md) | The accepted sprite-sheet JSON, validation, and the half-texel UV inset |
 | [`docs/ffi.md`](docs/ffi.md) | Native code policy and boundary rules |
 | [`docs/STATUS.md`](docs/STATUS.md) | What is implemented, tested, and pending |
 | [`docs/adr/`](docs/adr/) | Architecture decision records |
@@ -111,14 +136,15 @@ Next milestones, in order of intended value:
 
 1. ECS-lite: entity storage and systems with explicit scheduling.
 2. 2D collision detection and resolution.
-3. Asset loading and hot reload.
-4. Runtime verification on Windows, macOS, and Wayland (ADR 0005).
+3. Asset pipeline depth: atlas packing and hot reload on top of `mikan-assets`.
+4. Runtime verification on Windows, macOS, and Wayland (ADR 0005), and a
+   hardware-GPU measurement of the sprite benchmark.
 
 3D work, native C modules, and C++ integrations are deliberately out of scope
 until the 2D foundation is stable. Each of those needs a concrete justification
 before it is started; see [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md), ADR
-0004, and ADRs 0006 and 0007 (the sprites/camera and facade milestones record
-why they are Rust-only).
+0004, and ADRs 0006, 0007, and 0008 (the sprites/camera, facade, and
+sprite-rendering milestones record why they are Rust-only).
 
 ## Platform support
 
