@@ -3,7 +3,9 @@
 //! Everything gameplay-facing lives here. The demo implements [`Game`], so it
 //! is driven by the engine's real runtime through the facade: the facade owns
 //! the renderer and forwards resizes, `mikan-platform` owns the window, input,
-//! and timing, and `mikan-render` draws.
+//! and timing, and `mikan-render` draws. The classic scene's player is a
+//! `mikan-ecs` entity whose systems run once per fixed step (see
+//! [`crate::player`]).
 //!
 //! Assets are real files loaded by `mikan-assets` at startup (see
 //! [`crate::assets`]); the sprite layouts are in [`crate::scene`].
@@ -11,16 +13,18 @@
 use std::time::Duration;
 
 use mikan::{
-    AppContext, Camera2d, CaptureBuffer, Engine, Frame, FrameOutcome, FrameStats, Game, KeyCode,
-    PhysicalKey, RenderError, SamplerMode, Sprite,
+    AppContext, Camera2d, CaptureBuffer, DeadEntity, Engine, Entity, Frame, FrameOutcome,
+    FrameStats, Game, KeyCode, PhysicalKey, RenderError, SamplerMode, Schedule, Sprite, World,
 };
 use thiserror::Error;
 
 use crate::assets::{AssetError, Assets};
 use crate::cli::{CameraMode, Cli, Scene};
+use crate::player::{
+    Motion, MoveDirection, Player, Position, PreviousPosition, WorldBounds, direction_from_keys,
+};
 use crate::ppm;
 use crate::scene::{self, StressLayout};
-use crate::square::{Square, direction_from_keys};
 
 /// Failures the demo itself can report.
 #[derive(Debug, Error)]
@@ -36,6 +40,10 @@ pub enum DemoError {
     /// Writing a captured frame failed.
     #[error(transparent)]
     Image(#[from] ppm::PpmError),
+
+    /// Spawning the player entity failed (a handle was not alive).
+    #[error(transparent)]
+    Ecs(#[from] DeadEntity),
 
     /// The requested frames were not presented within the timeout.
     #[error(
@@ -62,7 +70,15 @@ pub struct Demo {
     /// Textures and sheet loaded at startup, kept alive for the sprites that
     /// borrow them.
     assets: Option<Assets>,
-    square: Square,
+    /// The classic scene's simulation: one player entity and its schedule.
+    world: World,
+    schedule: Schedule,
+    /// The player entity, spawned in [`Game::init`].
+    player: Option<Entity>,
+    /// Fixed steps run, and how many of them changed the player's position.
+    /// Diagnostics for the shutdown log and the runtime verification.
+    fixed_steps: u64,
+    moved_steps: u64,
     /// Stress-scene grid, built once the viewport is known.
     layout: Option<StressLayout>,
     presented: u64,
@@ -85,7 +101,11 @@ impl Demo {
             capture: cli.capture.as_ref().map(|_| CaptureBuffer::new()),
             cli,
             assets: None,
-            square: Square::new([0.0, 0.0], scene::PLAYER_SIZE, scene::PLAYER_SPEED),
+            world: World::new(),
+            schedule: crate::player::schedule(),
+            player: None,
+            fixed_steps: 0,
+            moved_steps: 0,
             layout: None,
             presented: 0,
             captured: false,
@@ -144,14 +164,10 @@ impl Demo {
         let sampler = self.sampler();
         let world = self.world_view(viewport);
         match self.cli.scene {
-            Scene::Classic => scene::classic(
-                assets,
-                self.square.interpolated_position(alpha),
-                self.square.size(),
-                world,
-                sampler,
-            )
-            .to_vec(),
+            Scene::Classic => {
+                let (center, size) = self.player_pose(alpha);
+                scene::classic(assets, center, size, world, sampler).to_vec()
+            }
             Scene::Showcase => scene::showcase(assets, sampler),
             Scene::Stress => {
                 let mut sprites = Vec::new();
@@ -170,7 +186,7 @@ impl Demo {
                 // Without a following camera the virtual screen sits at the
                 // world origin, like a fixed game screen.
                 CameraMode::None => [virtual_size[0] as f32 * 0.5, virtual_size[1] as f32 * 0.5],
-                CameraMode::Follow => self.square.interpolated_position(alpha),
+                CameraMode::Follow => self.player_pose(alpha).0,
             };
             return Some(Camera2d::pixel_perfect(position, viewport, virtual_size));
         }
@@ -178,11 +194,19 @@ impl Demo {
             CameraMode::None => None,
             // The camera centers on the interpolated player position, so the
             // player stays still on screen while the world scrolls.
-            CameraMode::Follow => Some(Camera2d::new(
-                self.square.interpolated_position(alpha),
-                self.cli.zoom,
-            )),
+            CameraMode::Follow => Some(Camera2d::new(self.player_pose(alpha).0, self.cli.zoom)),
         }
+    }
+
+    /// The player's interpolated render pose for this frame.
+    ///
+    /// Falls back to a degenerate square before [`Game::init`] has spawned the
+    /// entity, so a frame that slips through before initialization draws
+    /// nothing visible instead of panicking.
+    fn player_pose(&self, alpha: f32) -> ([f32; 2], f32) {
+        self.player
+            .and_then(|entity| crate::player::render_pose(&self.world, entity, alpha))
+            .unwrap_or(([0.0, 0.0], 0.0))
     }
 
     /// Writes the most recent captured frame, if one was requested.
@@ -316,10 +340,23 @@ impl Game for Demo {
         // Start where the scene's default view is centered: the visible world
         // region's middle, so the player is on screen in every mode.
         let view = self.world_view([width as f32, height as f32]);
-        self.square = Square::new(
+        self.world.insert_resource(WorldBounds(view));
+        self.world.insert_resource(MoveDirection([0.0, 0.0]));
+        let player = crate::player::spawn_player(
+            &mut self.world,
             [view[0] * 0.5, view[1] * 0.5],
             scene::PLAYER_SIZE,
             scene::PLAYER_SPEED,
+        )?;
+        self.player = Some(player);
+        log::info!(
+            "ecs: {} entity, {} components, systems: {}",
+            self.world.entity_count(),
+            self.world.component_count::<Position>()
+                + self.world.component_count::<PreviousPosition>()
+                + self.world.component_count::<Motion>()
+                + self.world.component_count::<Player>(),
+            self.schedule.names().collect::<Vec<_>>().join(", "),
         );
         if self.cli.scene == Scene::Stress {
             let layout =
@@ -350,7 +387,25 @@ impl Game for Demo {
         let direction = Self::direction(engine.ctx());
         let (width, height) = engine.renderer().size();
         let view = self.world_view([width as f32, height as f32]);
-        self.square.fixed_update(direction, dt, view);
+
+        // The step's external state, written before the systems run: the
+        // direction the keys ask for and the region the player is kept in.
+        self.world.insert_resource(MoveDirection(direction));
+        self.world.insert_resource(WorldBounds(view));
+
+        let before = self
+            .player
+            .and_then(|entity| self.world.get::<Position>(entity))
+            .map(|position| position.0);
+        self.schedule.run(&mut self.world, dt);
+        self.fixed_steps += 1;
+        let after = self
+            .player
+            .and_then(|entity| self.world.get::<Position>(entity))
+            .map(|position| position.0);
+        if before != after {
+            self.moved_steps += 1;
+        }
         Ok(())
     }
 
@@ -430,13 +485,22 @@ impl Game for Demo {
         // A single summary line makes smoke-test runs greppable: it states how
         // many frames were presented out of the frames the loop attempted, and
         // where the simulation ended up.
-        let position = self.square.position();
+        let position = self
+            .player
+            .and_then(|entity| self.world.get::<Position>(entity))
+            .map_or([0.0, 0.0], |position| position.0);
         log::info!(
             "demo finished: presented {} of {} frames; square at [{:.0}, {:.0}]",
             self.presented,
             engine.ctx().time().frame_count(),
             position[0],
             position[1]
+        );
+        log::info!(
+            "ecs: {} entity, {} fixed steps, {} moved steps",
+            self.world.entity_count(),
+            self.fixed_steps,
+            self.moved_steps,
         );
     }
 }

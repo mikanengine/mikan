@@ -7,9 +7,9 @@
 mod assets;
 mod cli;
 mod demo;
+mod player;
 mod ppm;
 mod scene;
-mod square;
 
 use std::process::ExitCode;
 
