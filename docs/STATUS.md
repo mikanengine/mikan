@@ -1,11 +1,12 @@
 # Mikan status
 
-- **Date:** 2026-10-15
-- **Revision:** working tree on top of `main` @ `9c3e98b` ("docs: record the CI
-  run for the facade milestone"). **The Phase 3 changes are not committed**:
-  commits, pushes, and CI runs happen only with explicit authorization, so the
-  "Verification: CI" section below records the last committed state, and every
-  claim in this document comes from the working tree on this machine.
+- **Date:** 2026-10-16
+- **Revision:** `main` @ `2f37c02` ("docs: document the 2D sprite rendering
+  milestone"). The Phase 3 change set is committed locally as seven commits
+  (`991c17e`..`2f37c02`); **pushes and CI runs still require explicit
+  authorization**, so the "Verification: CI" section below records the last
+  pushed state, and every claim in this document comes from local runs on this
+  machine.
 - **Purpose:** state precisely what is implemented, how each claim was verified,
   and what is known to be missing. Verification levels follow ADR 0005: nothing
   is called *verified* unless it was run.
@@ -42,7 +43,7 @@ texture creation and a `render_frame` call for submission. `demo2d` is a client
 that depends on the single `mikan` crate, and the milestone contains **no C or
 C++** — ADR 0007 records why the ADR 0004 criteria remain unmet.
 
-## Milestone: 2D sprite rendering system (assets, samplers, pixel-perfect) — complete in the working tree
+## Milestone: 2D sprite rendering system (assets, samplers, pixel-perfect) — complete
 
 Real assets replace code-generated tiles, and the sprite pipeline gains the
 controls a 2D renderer needs:
@@ -176,9 +177,10 @@ How to read this, honestly:
 
 ## Verification: CI
 
-**No CI run covers the working tree: this milestone is uncommitted** (by
-policy, commits and pushes require explicit authorization). The last committed
-state, `92398f3`/`431d894` (the facade milestone), is green in run
+**No CI run covers the Phase 3 commits: they are committed locally but not
+pushed** (by policy, pushes require explicit authorization). The last pushed
+state, `9c3e98b` (documentation for the facade milestone; runtime code
+`92398f3`/`431d894`), is green in run
 [38753924627](https://github.com/neverseeyouagainnnnn/mikan/actions/runs/38753924627):
 fmt/check/tests/clippy/release, the Xvfb smoke job (smoke, input, camera), and
 the Windows/macOS compile checks. The repository's `.github/workflows/ci.yml`
@@ -229,13 +231,13 @@ push will exercise them in CI.
 
 ## Milestone changes (committed to `main`)
 
-Unchanged for this milestone: the two facade-milestone commits (`5ffe1c7`,
-`431d894`) plus the documentation commit that contains the historical text of
-this file; see the previous revision of `STATUS.md` for the details.
+The facade milestone (`5ffe1c7`, `431d894`, documentation `92398f3`/`9c3e98b`)
+plus the Phase 3 change set, committed locally on 2026-10-16 as seven commits
+(not yet pushed): `991c17e` (core) → `a7c69f6` (assets) → `7c3c3a1` (render)
+→ `2b9d66b` (mikan) → `201190d` (demo2d) → `162f304` (verification) → `2f37c02`
+(docs).
 
-## Milestone changes (working tree, uncommitted)
-
-The Phase 3 change set, all local:
+In detail:
 
 - **New crate:** `crates/mikan-assets` (`image.rs`, `sheet.rs`, tests) and its
   workspace wiring; `mikan` re-exports it.
