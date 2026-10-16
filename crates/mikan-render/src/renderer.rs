@@ -9,7 +9,7 @@ use crate::Frame;
 use crate::RenderWindow;
 use crate::capture::{CaptureBuffer, align_to, decode_rows};
 use crate::error::RenderError;
-use crate::sprite::SpriteRenderer;
+use crate::sprite::{FrameStats, SpriteRenderer};
 use crate::texture::{Texture, TextureDescriptor};
 
 /// Knobs for renderer initialization.
@@ -174,6 +174,17 @@ impl Renderer {
         self.capture_supported
     }
 
+    /// What the most recently submitted frame consisted of.
+    ///
+    /// Counts the sprites, batches, and instanced draw calls of the last frame
+    /// that reached submission. Frames skipped before drawing (an unusable
+    /// surface, an acquire timeout) leave the previous value in place, so this
+    /// is diagnostics data, not a frame counter.
+    #[must_use]
+    pub fn last_frame_stats(&self) -> FrameStats {
+        self.sprites.last_stats()
+    }
+
     /// Uploads a texture that sprites can sample.
     ///
     /// Pixel data is linear RGBA8, `width * height * 4` bytes, row-major, top
@@ -293,6 +304,16 @@ impl Renderer {
                 label: Some("mikan frame encoder"),
             });
 
+        // Instance data is uploaded before the render pass begins, so a frame
+        // that cannot fit in a vertex buffer fails without half-recorded work.
+        self.sprites.prepare(
+            &self.device,
+            &self.queue,
+            frame.camera,
+            self.size,
+            frame.sprites,
+        )?;
+
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("mikan frame"),
@@ -310,14 +331,7 @@ impl Renderer {
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
-            self.sprites.draw(
-                &self.device,
-                &self.queue,
-                &mut pass,
-                frame.camera,
-                self.size,
-                frame.sprites,
-            );
+            self.sprites.record(&mut pass, frame.sprites);
         }
 
         // Capture must happen before presentation: afterwards the swap chain

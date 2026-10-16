@@ -5,38 +5,44 @@
 //! - a [`wgpu`] instance, adapter, device, and queue,
 //! - a swap chain surface with deliberate handling of every
 //!   [`wgpu::CurrentSurfaceTexture`] outcome,
-//! - textures uploaded from linear RGBA8 pixel data ([`Texture`]),
-//! - a small renderer for [`Sprite`]s: flat colored or textured rectangles,
-//!   drawn in order with one instanced draw call per run of sprites that share
-//!   a texture, under an optional 2D [`Camera2d`](mikan_core::Camera2d),
+//! - textures uploaded from RGBA8 pixel data ([`Texture`]), linear or
+//!   sRGB-encoded,
+//! - a small renderer for [`Sprite`]s: flat colored or textured rectangles that
+//!   can be scaled, rotated, tinted, and sampled nearest or linear, drawn in
+//!   order with one instanced draw call per run of sprites that share a texture
+//!   and sampler mode, under an optional 2D [`Camera2d`](mikan_core::Camera2d),
+//! - per-frame submission statistics ([`FrameStats`]),
 //! - optional single-frame readback ([`CaptureBuffer`]) for tests and tooling.
 //!
 //! It deliberately does **not** depend on `mikan-platform`: the renderer needs
 //! only a window handle, expressed by the [`RenderWindow`] trait, so graphics
 //! cannot reach into event handling and the dependency graph stays a DAG.
+//! Loading images from files is the job of `mikan-assets`, which produces the
+//! pixel data [`Renderer::create_texture`] accepts.
 //!
 //! # What this is not (yet)
 //!
-//! There is no image loading, no atlas packing, no rotation, no depth buffer,
-//! and no 3D pipeline. Textures have a single mip level and no sRGB variant.
-//! Painting order equals submission order; sprites are never reordered to
-//! reduce draw calls.
+//! There is no depth buffer, no materials, no atlas packing, and no 3D
+//! pipeline. Textures have a single mip level. Painting order equals submission
+//! order; sprites are never reordered to reduce draw calls.
 //!
 //! # Example
 //!
 //! ```no_run
 //! # use std::sync::Arc;
 //! # use mikan_core::{Camera2d, Color};
-//! # use mikan_render::{Frame, Renderer, RenderSettings, Sprite, TextureDescriptor};
+//! # use mikan_render::{Frame, Renderer, RenderSettings, SamplerMode, Sprite, TextureDescriptor};
 //! # fn example(window: Arc<impl mikan_render::RenderWindow>, size: (u32, u32)) -> Result<(), mikan_render::RenderError> {
 //! let mut renderer = Renderer::new(window, size, RenderSettings::default())?;
 //!
-//! // Textures are uploaded as linear RGBA8 pixels.
+//! // Textures are uploaded as RGBA8 pixels; PNG bytes come from mikan-assets.
 //! let pixels = [255u8, 128, 0, 255];
 //! let texture = renderer.create_texture(TextureDescriptor::new(1, 1, &pixels))?;
 //!
 //! let sprites = [
-//!     Sprite::new([100.0, 100.0], [64.0, 64.0], &texture),
+//!     Sprite::new([100.0, 100.0], [64.0, 64.0], &texture)
+//!         .with_rotation(0.5)
+//!         .with_sampler(SamplerMode::Nearest),
 //!     Sprite::solid([200.0, 100.0], [32.0, 32.0], Color::WHITE),
 //! ];
 //! let camera = Camera2d::pixel_space([960.0, 600.0]);
@@ -44,6 +50,8 @@
 //!     .with_camera(camera)
 //!     .with_sprites(&sprites);
 //! renderer.render_frame(&frame, None)?;
+//! let stats = renderer.last_frame_stats();
+//! assert_eq!(stats.sprites, 2);
 //! # Ok(())
 //! # }
 //! ```
@@ -58,9 +66,10 @@ mod texture;
 
 pub use capture::CaptureBuffer;
 pub use error::RenderError;
+pub use mikan_core::UvRect;
 pub use renderer::{RenderSettings, Renderer};
-pub use sprite::{Sprite, UvRect};
-pub use texture::{TEXTURE_FORMAT, Texture, TextureDescriptor};
+pub use sprite::{FrameStats, SamplerMode, Sprite};
+pub use texture::{Texture, TextureDescriptor, TextureEncoding};
 
 use core::fmt::Debug;
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};

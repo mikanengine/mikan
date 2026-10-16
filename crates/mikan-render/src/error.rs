@@ -101,4 +101,15 @@ pub enum RenderError {
         /// Byte count provided.
         actual: u64,
     },
+
+    /// A frame carries more sprites than fit in a single vertex buffer.
+    #[error(
+        "a frame with {count} sprites exceeds the instance capacity the device supports ({max})"
+    )]
+    TooManySprites {
+        /// Sprites in the frame.
+        count: usize,
+        /// Largest number of instances one vertex buffer can hold.
+        max: usize,
+    },
 }
