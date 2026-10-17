@@ -100,8 +100,27 @@ focus_window() {
     return 1
 }
 
+# Input must arrive while the frame loop is live. winit queues every event the
+# window receives while the renderer initializes — adapter enumeration alone can
+# take seconds on a loaded machine — and a keydown/keyup pair drained in one
+# pump never reads as a held key. The runner logs `presenting frames` once its
+# first frame is presented, which is the signal the window will actually see
+# subsequent events.
+wait_for_frames() {
+    for _ in $(seq 1 300); do
+        if grep -q "presenting frames" "$RUN_LOG"; then
+            return 0
+        fi
+        sleep 0.1
+    done
+    echo "error: the demo never started presenting frames" >&2
+    cat "$RUN_LOG" >&2
+    return 1
+}
+
 # Starts the demo with a frame budget and optional extra arguments, waits for
-# the window, and gives it focus. Sets DEMO_PID for `wait` and `cleanup_demo`.
+# the window, gives it focus, and waits for the first presented frame. Sets
+# DEMO_PID for `wait` and `cleanup_demo`.
 start_demo() {
     local frames=$1
     shift
@@ -111,5 +130,7 @@ start_demo() {
     find_window
     sleep 0.3
     focus_window
+    sleep 0.2
+    wait_for_frames
     sleep 0.2
 }

@@ -991,6 +991,16 @@ that recorded it here, listed so the inventory is complete:
 - **Scripts:** new `verify_audio.sh` and `bench_audio.sh`;
   `scripts/generate_assets.py` writes and checks `blip.wav`; `verify.sh` and
   the CI smoke job gained the audio step.
+- **Harness fix (the follow-up `fix` commit, which also records it here):** the
+  platform runner logs `presenting frames` once its first frame outcome is
+  `Presented`, and `start_demo` waits for that line before a script injects
+  any key. winit queues every event that arrives while the renderer
+  initializes, and a press plus release drained in one pump never reads as
+  held — on this machine, memory pressure slowed llvmpipe's adapter
+  enumeration to seconds, which is what exposed the race in
+  `verify_input.sh` (the square could report zero movement while the `--audio`
+  lane, tapped after a faster startup, passed). With the gate, input is only
+  injected while the frame loop is live.
 - **Docs:** ADR 0014, `docs/audio.md`, and refreshed README, ARCHITECTURE,
   DEVELOPMENT, CHANGELOG, FFI policy, and this file (including the pending
   Valgrind record and the no-sound-card limitation, both stated as pending

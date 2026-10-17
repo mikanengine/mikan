@@ -256,7 +256,15 @@ xvfb-run -a bash scripts/verify_input.sh
 The script holds `D` for one second and checks that the square ended up where
 the configured speed says it should, then taps `Escape` and checks that the
 process exits cleanly with status 0 instead of running into the frame-budget
-timeout. It requires `xdotool`, `python3`, and a display.
+timeout. It requires `xdotool`, `python3`, a
+release build of the demo, and a display.
+
+Both checks are gated on readiness: `start_demo` waits for the runner's
+`presenting frames` line — logged once the first frame is presented — before it
+returns, so keys are injected while the frame loop is actually live. Events
+that arrive earlier are queued by winit while the renderer initializes (adapter
+enumeration alone can take seconds on a loaded machine), and a press and its
+release drained in the same pump never reads as a held key.
 
 This check exists because it found a real bug: with rendering at roughly
 600 frames per second and a 120 Hz simulation, most frames run zero fixed

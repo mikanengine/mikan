@@ -24,7 +24,7 @@
 
 use std::sync::Arc;
 
-use mikan_core::{EngineConfig, FixedTimestep, Time};
+use mikan_core::{EngineConfig, FixedTimestep, FrameOutcome, Time};
 use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
 use winit::event::WindowEvent;
@@ -72,6 +72,11 @@ struct Runner<A: App> {
     suspended: bool,
     idle: bool,
     initialized: bool,
+    /// Whether the first presented frame has already been announced. Synthetic
+    /// input testers wait for that announcement: winit queues every event the
+    /// window receives while the renderer initializes, and a press and its
+    /// release drained together never read as a held key.
+    presented_once: bool,
     exit_requested: bool,
     shutdown_done: bool,
     error: Option<PlatformError>,
@@ -92,6 +97,7 @@ impl<A: App> Runner<A> {
             suspended: false,
             idle: false,
             initialized: false,
+            presented_once: false,
             exit_requested: false,
             shutdown_done: false,
             error: None,
@@ -213,6 +219,16 @@ impl<A: App> Runner<A> {
                 return;
             }
         };
+
+        // Announce the first presented frame exactly once. The verify scripts
+        // wait for this line before injecting synthetic input: events queued
+        // while the renderer initializes (adapter enumeration alone can take
+        // seconds on a loaded machine) are drained together, so a hold that
+        // predates the frame loop would never read as held.
+        if outcome == FrameOutcome::Presented && !self.presented_once {
+            self.presented_once = true;
+            log::info!("presenting frames");
+        }
 
         // Edge state belongs to the frame that observes it, so it is cleared
         // once the application has seen it in a fixed update and in the render
