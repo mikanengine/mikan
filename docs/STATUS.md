@@ -1,21 +1,21 @@
 # Mikan status
 
 - **Date:** 2026-10-17
-- **Revision:** `main` @ `23be31e` ("feat: add input system with C backend and
-  C++ runtime"), with a clean working tree. The Phase 3 change set is committed
-  locally as eight commits (`991c17e`..`5c95578`), Phase 4 (ECS-lite) as five
+- **Revision:** `main` @ `99fcbb6` ("verification: force the X11 backend in the
+  input verify scripts"), the last pushed commit, plus local, unpushed commits:
+  `cb27f88` (the Phase 8 CI record), `a3f77e8` (the Phase 9 audio milestone —
+  the audio-sys and audio crates, the WAV decoder, the demo2d `--audio` lane,
+  the bench and verify scripts, ADR 0014, `docs/audio.md`, and the refreshed
+  README, ARCHITECTURE, DEVELOPMENT, CHANGELOG, FFI, and STATUS text), and this
+  commit (which records them here). The earlier history is described in the
+  previous revision of this header: the Phase 3 change set as eight commits
+  (`991c17e`..`5c95578`), Phase 4 (ECS-lite) as five
   (`813cbc2`..`0f74e34`), Phase 5 (collision + Luau scripting) as `5f63579`,
   the Phase 7 (scene and entity system) change set plus the crate-directory
   renames (`crates/mikan-*` → `crates/*`) as `860d698` and its follow-up
-  kernel-driver fix as `07c6c33`, the bulk of the Phase 8 input work (the
-  input-sys and input crates, the integration tests, the demo2d `--actions`
-  lane, the bench and verify scripts) as `773589e`, and the Phase 8 remainder —
-  the C++-runtime release fix (a release is attributed to **every context that
-  holds the input**, not only the one arbitration would currently pick, with a
-  regression test), the build-profile/build-resource tuning
-  (`.cargo/config.toml`, profile changes), and the Phase 8 **documentation**
-  (ADR 0013, `docs/input.md`, this file, and the CI/verify wiring) — as
-  `23be31e`. **Pushes and CI runs still require explicit
+  kernel-driver fix as `07c6c33`, and the Phase 8 input work as `773589e` (the
+  bulk) and `23be31e` (the C++-runtime release fix, the build-resource tuning,
+  and the documentation). **Pushes and CI runs still require explicit
   authorization**, so the "Verification: CI" section below records the last
   pushed state, and every claim in this document comes from local runs on
   this machine.
@@ -810,7 +810,7 @@ they are local-run claims, listed as such above.
   hardware-GPU measurement exists, so the 10,000-sprite figure is a measured
   floor of what the pipeline submits (one draw call), not a hardware estimate.
 
-## Milestone changes (Phases 3–7 committed locally; Phase 8 committed)
+## Milestone changes (Phases 3–7 committed locally; Phases 8 and 9 committed and unpushed)
 
 The facade milestone (`5ffe1c7`, `431d894`, documentation `92398f3`/`9c3e98b`)
 plus the Phase 3 change set, committed locally on 2026-10-16 as eight commits
@@ -962,6 +962,39 @@ The Phase 8 input change set was committed as `773589e` (the bulk) and
 - **Docs (`23be31e`, the remainder of this revision):** ADR 0013, `docs/input.md`, the native
   module inventory in `docs/ffi.md`, refreshed README, ARCHITECTURE,
   DEVELOPMENT, CHANGELOG, this file, and the CI step.
+
+The Phase 9 audio change set was committed as `a3f77e8` (the feature, the
+docs, the scripts, and the verification in one commit) followed by the commit
+that recorded it here, listed so the inventory is complete:
+
+- **New crates:** `crates/audio-sys` (`src/mikan_audio.h` — the ABI contract;
+  `src/audio_backend.c` — the C device backend and the offline ring;
+  `src/audio_runtime.cpp` — the C++ mixer runtime; `src/mikan_miniaudio_config.h`
+  and `src/miniaudio_impl.c` — the vendored-miniaudio translation unit;
+  `third_party/miniaudio/miniaudio.h` + `README.md` — the pinned vendored
+  header, version 0.11.25 with its SHA-256 recorded; `build.rs`; `src/lib.rs`,
+  `src/backend.rs`, `src/runtime.rs`, `src/system.rs` — the raw mirrors and
+  RAII handles; `src/reference.rs` — the Rust mixer oracle; `tests/backend.rs`,
+  `tests/runtime.rs`, `tests/raw.rs`, `tests/cross_check.rs`) and
+  `crates/audio` (`src/lib.rs`, `src/sound.rs`, `src/voice.rs`,
+  `src/system.rs`, `examples/bench_audio.rs`), with their workspace wiring and
+  the root `[workspace.dependencies]` entries.
+- **`mikan-assets`:** new `src/sound.rs` (`SoundData`, the strict WAV decoder,
+  `SoundError`, `MAX_SOUND_FRAMES`) with its tests and re-exports.
+- **`mikan`:** re-exports of `mikan_audio` with its common types and of
+  `SoundData`/`SoundError` from `mikan-assets`.
+- **`demo2d`:** `--audio` in `cli.rs` and the `AudioLane` in `demo.rs` (the
+  device attempt with an explicit offline fallback, the blip on movement edges
+  with pitch following the vertical direction, one pump plus a full drain per
+  displayed frame, the shutdown summary), and the committed
+  `games/demo2d/assets/blip.wav`.
+- **Scripts:** new `verify_audio.sh` and `bench_audio.sh`;
+  `scripts/generate_assets.py` writes and checks `blip.wav`; `verify.sh` and
+  the CI smoke job gained the audio step.
+- **Docs:** ADR 0014, `docs/audio.md`, and refreshed README, ARCHITECTURE,
+  DEVELOPMENT, CHANGELOG, FFI policy, and this file (including the pending
+  Valgrind record and the no-sound-card limitation, both stated as pending
+  rather than claimed).
 
 ## Next milestone
 
