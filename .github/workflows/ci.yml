@@ -86,6 +86,9 @@ jobs:
       - name: Verify keyboard input end to end
         run: xvfb-run -a bash scripts/verify_input.sh
 
+      - name: Verify the action-mapping input lane end to end
+        run: xvfb-run -a bash scripts/verify_input_actions.sh
+
       - name: Verify the 2D camera end to end
         run: xvfb-run -a bash scripts/verify_camera.sh
 

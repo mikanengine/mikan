@@ -296,6 +296,36 @@ fn contexts_have_explicit_priority_precedence() {
 }
 
 #[test]
+fn release_reaches_the_context_that_consumed_the_press() {
+    let mut runtime = Runtime::new();
+    let gameplay = runtime.add_context(0).unwrap();
+    let ui = runtime.add_context(100).unwrap();
+    runtime.bind_key(gameplay, keys::KEY_A, 1).unwrap();
+    runtime.bind_key(ui, keys::KEY_A, 2).unwrap();
+    runtime.set_context_active(ui, false).unwrap();
+
+    runtime
+        .process(&[InputEvent::key(keys::KEY_A, true)])
+        .unwrap();
+    assert!(runtime.is_action_held(1).unwrap());
+    runtime.end_step().unwrap();
+
+    runtime.set_context_active(ui, true).unwrap();
+    runtime
+        .process(&[InputEvent::key(keys::KEY_A, false)])
+        .unwrap();
+
+    let gameplay_state = runtime.action_state(1).unwrap();
+    assert!(!gameplay_state.held);
+    assert!(gameplay_state.just_released);
+    assert_eq!(
+        runtime.action_state(2).unwrap(),
+        ActionState::default(),
+        "the newly active context never received the press"
+    );
+}
+
+#[test]
 fn deactivating_a_context_releases_what_it_held() {
     let mut runtime = Runtime::new();
     let gameplay = runtime.add_context(0).unwrap();

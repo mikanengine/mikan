@@ -57,6 +57,21 @@ APIs and `wgpu` uses Metal on macOS and DX12/Vulkan on Windows.
 
 ## Build and run
 
+Builds default to one Cargo job to keep peak memory usage down, especially
+when compiling `wgpu` and the vendored Luau VM. Development builds retain
+line-level debug information while omitting the larger variable-level debug
+data. Release builds use Rust's normal optimized code generation without
+link-time optimization, which avoids its high compile-time memory cost.
+
+If your machine has spare memory and CPU, increase parallelism for a command:
+
+```bash
+cargo build --workspace --jobs 2
+```
+
+You can also set `CARGO_BUILD_JOBS` for a shell session. For the smallest build
+footprint, keep the default of one job.
+
 ```bash
 cargo build                            # debug build of the whole workspace
 cargo run -p demo2d --release          # run the demo (optimized)
@@ -128,6 +143,10 @@ cargo run -p demo2d --release -- --script /path/to/my_player.luau    # your own
 The script's step contract (arguments, return values, validation, failure
 behavior) and the sandbox are documented in [`scripting.md`](scripting.md); the
 decision record is ADR 0011.
+
+The action-mapping API and its update semantics are described in
+[`input.md`](input.md). The demo's `--actions` option routes the usual keyboard
+and wheel controls through that API.
 
 ## Quality gates
 
@@ -238,6 +257,18 @@ This check exists because it found a real bug: with rendering at roughly
 updates, and input press edges were being discarded at the end of those frames.
 A tapped Escape key was therefore lost. The runner now consumes input edges only
 on frames that ran an update.
+
+The action-mapping lane is exercised separately so it cannot silently regress
+to raw key queries:
+
+```bash
+xvfb-run -a bash scripts/verify_input_actions.sh
+```
+
+This verifies movement, wheel values, and the Escape press edge through the
+platform event log, native C backend, C++ action runtime, and demo lifecycle.
+The current device limits and gamepad extension path are documented in
+[`input.md`](input.md).
 
 ### Verifying the 2D camera
 
@@ -428,6 +459,23 @@ architecture directive, not performance, and no speedup is claimed; see
 `docs/STATUS.md` for the numbers and ADR 0012 for why the module exists anyway.
 The Rust reference doubles as the test oracle, cross-checked bit for bit, so
 this benchmark compares two implementations that provably agree.
+
+### Benchmarking the input pipeline
+
+```bash
+bash scripts/bench_input.sh              # 65,536 batches x 9 events, default runs
+BATCHES=16384 bash scripts/bench_input.sh
+```
+
+Runs the same deterministic batch stream (6 key transitions, 2 cursor moves,
+1 wheel tick) through the engine step (`InputSystem::process` + queries +
+`end_step`), the C device backend alone (`mikan-input-sys`), and the Rust
+`Normalizer` oracle in release, records ns/event under `artifacts/bench/`, and
+asserts bit-for-bit parity between the two normalizers before printing any
+time. The recorded result is that **the C backend is slower than the Rust
+oracle** and the full engine step stays under ≈40 ns/event; no speedup is
+claimed; see `docs/STATUS.md` for the numbers and ADR 0013 for why the module
+exists anyway.
 
 ### Benchmarking the sprite pipeline
 

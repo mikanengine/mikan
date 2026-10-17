@@ -13,7 +13,7 @@ why the native layer exists and its honest measurement — is
 
 | Crate | Role |
 | --- | --- |
-| `crates/scene-sys` | The native module: `src/transform.c` (C, `mikan_transform2d_compose`), `src/scene_graph.cpp` (C++, the topology), `src/mikan_transform.h` and `src/mikan_scene_graph.h` (the contract), a `build.rs` that compiles them with warnings-as-errors and `-fno-exceptions -fno-rtti`, the `#[repr(C)]` transform mirror and status codes, and the raw `extern "C"` declarations. One of two crates allowed to use `unsafe`; the override and its reason are recorded in the crate root. |
+| `crates/scene-sys` | The native module: `src/transform.c` (C, `mikan_transform2d_compose`), `src/scene_graph.cpp` (C++, the topology), `src/mikan_transform.h` and `src/mikan_scene_graph.h` (the contract), a `build.rs` that compiles them with warnings-as-errors and `-fno-exceptions -fno-rtti`, the `#[repr(C)]` transform mirror and status codes, and the raw `extern "C"` declarations. One of the three crates allowed to use `unsafe`; the override and its reason are recorded in the crate root. |
 | `crates/scene` | The safe face: `Transform2d`, `GlobalTransform2d`, `Hierarchy`, `DespawnQueue`, `Scene`, `SceneManager`, and `reference`. Contains no `unsafe`. |
 
 Three layers, in call order:

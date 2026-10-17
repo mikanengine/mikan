@@ -57,7 +57,11 @@ impl Lcg {
 /// The raw batch shape: one fixed-update worth of device traffic.
 enum Raw {
     /// A key transition.
-    Key { code: u32, pressed: bool, repeat: bool },
+    Key {
+        code: u32,
+        pressed: bool,
+        repeat: bool,
+    },
     /// An absolute cursor position.
     Move { x: f64, y: f64 },
     /// One wheel step.
@@ -69,12 +73,36 @@ fn make_raw_batch(lcg: &mut Lcg) -> Vec<Raw> {
     let (x1, y1) = lcg.next_pos();
     let (x2, y2) = lcg.next_pos();
     vec![
-        Raw::Key { code: inf::keys::KEY_G, pressed: true, repeat: false },
-        Raw::Key { code: inf::keys::KEY_H, pressed: false, repeat: false },
-        Raw::Key { code: inf::keys::KEY_G, pressed: false, repeat: false },
-        Raw::Key { code: inf::keys::KEY_J, pressed: true, repeat: false },
-        Raw::Key { code: inf::keys::KEY_K, pressed: false, repeat: false },
-        Raw::Key { code: inf::keys::KEY_L, pressed: true, repeat: false },
+        Raw::Key {
+            code: inf::keys::KEY_G,
+            pressed: true,
+            repeat: false,
+        },
+        Raw::Key {
+            code: inf::keys::KEY_H,
+            pressed: false,
+            repeat: false,
+        },
+        Raw::Key {
+            code: inf::keys::KEY_G,
+            pressed: false,
+            repeat: false,
+        },
+        Raw::Key {
+            code: inf::keys::KEY_J,
+            pressed: true,
+            repeat: false,
+        },
+        Raw::Key {
+            code: inf::keys::KEY_K,
+            pressed: false,
+            repeat: false,
+        },
+        Raw::Key {
+            code: inf::keys::KEY_L,
+            pressed: true,
+            repeat: false,
+        },
         Raw::Move { x: x1, y: y1 },
         Raw::Move { x: x2, y: y2 },
         Raw::Wheel { dx: 3.0, dy: -8.5 },
@@ -85,12 +113,10 @@ fn make_raw_batch(lcg: &mut Lcg) -> Vec<Raw> {
 fn make_device_batch(lcg: &mut Lcg) -> Vec<DeviceEvent> {
     let (x1, y1) = lcg.next_pos();
     let (x2, y2) = lcg.next_pos();
-    let key_event = |code: KeyCode, pressed: bool| {
-        DeviceEvent::Key {
-            key: PhysicalKey::Code(code),
-            pressed,
-            repeat: false,
-        }
+    let key_event = |code: KeyCode, pressed: bool| DeviceEvent::Key {
+        key: PhysicalKey::Code(code),
+        pressed,
+        repeat: false,
     };
     vec![
         key_event(KeyCode::KeyG, true),
@@ -137,8 +163,7 @@ fn main() {
     let runs: u32 = 40;
 
     let mut lcg = Lcg::new(0x5EED_1A17);
-    let raw_stream: Vec<Vec<Raw>> =
-        (0..batches).map(|_| make_raw_batch(&mut lcg)).collect();
+    let raw_stream: Vec<Vec<Raw>> = (0..batches).map(|_| make_raw_batch(&mut lcg)).collect();
     let mut lcg = Lcg::new(0x5EED_1A17);
     let device_stream: Vec<Vec<DeviceEvent>> =
         (0..batches).map(|_| make_device_batch(&mut lcg)).collect();
@@ -152,7 +177,11 @@ fn main() {
         for batch in &raw_stream {
             for raw in batch {
                 match *raw {
-                    Raw::Key { code, pressed, repeat } => {
+                    Raw::Key {
+                        code,
+                        pressed,
+                        repeat,
+                    } => {
                         backend
                             .push_key(code, pressed, repeat)
                             .expect("a bench batch always fits");
@@ -173,9 +202,7 @@ fn main() {
                 }
             }
             native_batch.clear();
-            backend
-                .drain(&mut native_batch)
-                .expect("drain cannot fail");
+            backend.drain(&mut native_batch).expect("drain cannot fail");
             assert_eq!(
                 native_batch,
                 oracle.take(),
@@ -191,7 +218,11 @@ fn main() {
         for batch in &raw_stream {
             for raw in batch {
                 match *raw {
-                    Raw::Key { code, pressed, repeat } => backend
+                    Raw::Key {
+                        code,
+                        pressed,
+                        repeat,
+                    } => backend
                         .push_key(code, pressed, repeat)
                         .expect("a bench batch always fits"),
                     Raw::Move { x, y } => backend
@@ -212,7 +243,11 @@ fn main() {
         for batch in &raw_stream {
             for raw in batch {
                 match *raw {
-                    Raw::Key { code, pressed, repeat } => {
+                    Raw::Key {
+                        code,
+                        pressed,
+                        repeat,
+                    } => {
                         oracle.push_key(code, pressed, repeat);
                     }
                     Raw::Move { x, y } => oracle.push_mouse_move(x, y),
@@ -234,10 +269,7 @@ fn main() {
         (Binding::Key(PhysicalKey::Code(KeyCode::KeyG)), HOLD_G),
         (Binding::Key(PhysicalKey::Code(KeyCode::KeyJ)), FIRE_J),
         (Binding::Key(PhysicalKey::Code(KeyCode::KeyL)), HOLD_L),
-        (
-            Binding::Wheel(WheelAxis::Vertical),
-            SCROLL,
-        ),
+        (Binding::Wheel(WheelAxis::Vertical), SCROLL),
     ] {
         system
             .bind(gameplay, binding, action)
@@ -258,9 +290,7 @@ fn main() {
         }
     });
 
-    println!(
-        "input bench: {batches} batches x {events_per_batch} events, {runs} runs"
-    );
+    println!("input bench: {batches} batches x {events_per_batch} events, {runs} runs");
     report("engine step", engine_mean, batches, events_per_batch);
     report("kernel", native_mean, batches, events_per_batch);
     report("reference", reference_mean, batches, events_per_batch);

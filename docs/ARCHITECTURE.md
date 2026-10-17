@@ -33,7 +33,7 @@ as not implemented.
 - 3D rendering, PBR, shadows, or post-processing.
 - Native C/C++ modules without a concrete, documented justification (ADR 0004).
   The native modules are recorded in ADR 0010 (collision), ADR 0011 (Luau), and
-  ADR 0012 (scene); none is speculative.
+  ADR 0012 (scene), and ADR 0013 (input); none is speculative.
 
 ## 2. Crate responsibilities
 
@@ -45,6 +45,8 @@ crates/collision-sys   the C99 narrow-phase kernel and its ABI mirror; uses unsa
 crates/collision       safe collision face: broad phase, reference math, batch contacts
 crates/scene-sys       the C compose kernel and the C++ scene graph; uses unsafe
 crates/scene           safe scene face: transforms, hierarchy, scenes, manager
+crates/input-sys       the C device backend and the C++ action runtime; uses unsafe
+crates/input           safe input face: InputSystem, actions, contexts, key mapping
 crates/script          sandboxed Luau VM and the gameplay step contract
 crates/platform        winit is its only OS dependency; no graphics
 crates/render          wgpu is its only graphics dependency; no event handling
@@ -154,6 +156,25 @@ ADR 0012 — including the honest result that the native graph is slower than a
 Rust array fold, and why it exists anyway. Neither crate depends on the rest of
 the engine, so scene math and topology are testable without a window or a GPU.
 
+### `mikan-input-sys` and `mikan-input`
+
+The input boundary, split the same way. `-sys` owns a C device backend
+(`mikan_input_backend`: the canonical event model, raw device state, and
+normalization — duplicate press/release suppression, OS-repeat handling, move
+and wheel-delta coalescing, synthetic releases on focus loss) and a
+hand-written C++ action runtime (`mikan_input_runtime`: bindings grouped into
+prioritized contexts, per-event arbitration, and the per-action state machine
+with `just_pressed`/`just_released`/`repeating`/`value` semantics). Its
+`build.rs` compiles each file with warnings-as-errors and C++ with
+`-fno-exceptions -fno-rtti`; `unsafe` is allowed there with the reason recorded
+in the crate root, and `reference` is an independent Rust normalizer kept as
+the test oracle (cross-checked bit for bit against the C backend). The
+two native layers never call each other: Rust drains the backend and feeds the
+runtime in one batch per fixed step. `mikan-input` is the safe face:
+`InputSystem` (owns both native halves, translates `DeviceEvent`s, maps
+statuses to `InputError`s), `ActionId`/`ContextId`, `Binding`/`WheelAxis`, and
+the winit → HID code map. The guide is `docs/input.md`, the decision ADR 0013.
+
 ### `mikan-script`
 
 Sandboxed gameplay scripting. `ScriptEngine` loads a Luau script and calls its
@@ -172,10 +193,14 @@ only — it cannot see the ECS, the renderer, or the clock. The guide is
 Everything that touches the operating system's event and input model.
 
 - `App` — the lifecycle trait: `init`, `resize`, `update`, `render`, `shutdown`.
-- `AppContext` — read-only access to the window handle, input snapshot, config,
-  frame time, and interpolation alpha, plus `request_exit`.
-- `InputState` — keyboard and mouse state with held and per-frame edge queries,
-  cursor delta, and focus handling that releases keys when focus is lost.
+- `AppContext` — access to the window handle, the input state (`&` for the raw
+  lane, `&mut` for the event log a step may drain), config, frame time, and
+  interpolation alpha, plus `request_exit`.
+- `InputState` — keyboard and mouse held/edge queries, cursor delta, and focus
+  handling that releases keys when focus is lost, plus the per-frame
+  `DeviceEvent` log the input system drains (`take_events`), wheel-tick
+  normalization to pixels, a bounded drop-and-count mode, and `end_frame`
+  clearing all of it.
 - `run` — creates the window and drives `App` from a `winit` event loop; the
   only place that knows about `WindowEvent`.
 
@@ -222,9 +247,9 @@ created, driven, and torn down.
   `init` ran, and translates game errors into `PlatformError`. The event loop
   itself remains `mikan_platform::run`; the facade adds one adapter, not a
   second runtime.
-- Curated re-exports of all eight engine crates, including `mikan_assets`,
-  `mikan_ecs`, `mikan_collision`, `mikan_scene`, and `mikan_script`, so an
-  application needs one dependency for the common case.
+- Curated re-exports of the engine crates, including `mikan_assets`,
+  `mikan_ecs`, `mikan_collision`, `mikan_scene`, `mikan_script`, and
+  `mikan_input`, so an application needs one dependency for the common case.
 
 ### `games/demo2d`
 
@@ -273,6 +298,14 @@ other layers reach it through the facade's re-exports.
       |     |  +-----------+------------+             |             |
       |     |  | mikan-scene (safe)     |             |             |
       |     |  +------------------------+             |             |
+      |     |  +------------------------+             |             |
+      |     |  | mikan-input-sys        |             |             |
+      |     |  | (C backend + C++       |             |             |
+      |     |  |  runtime; unsafe)      |             |             |
+      |     |  +-----------+------------+             |             |
+      |     |  +-----------+------------+             |             |
+      |     |  | mikan-input (safe)     |             |             |
+      |     |  +------------------------+             |             |
       +-----+------------------------+----------------+-------------+
                                    |
                               +----+----+
@@ -286,19 +319,22 @@ other layers reach it through the facade's re-exports.
 
 Rules that keep this acyclic and comprehensible:
 
-- `mikan-core`, `mikan-ecs`, `mikan-collision-sys`, `mikan-scene-sys`, and
-  `mikan-script` depend on nothing else in the workspace (third-party crates
-  aside, `thiserror` and `mlua` respectively): the ECS is simulation data and
-  scheduling, the collision and transform kernels are plain data in and out,
-  the scene graph holds topology only, and the script VM knows nothing about the
-  engine.
-- `mikan-collision` depends on `mikan-collision-sys` only, and `mikan-scene`
-  on `mikan-scene-sys` only — the safe wrapper pattern `docs/ffi.md` prescribes.
+- `mikan-core`, `mikan-ecs`, `mikan-collision-sys`, `mikan-scene-sys`,
+  `mikan-input-sys`, and `mikan-script` depend on nothing else in the workspace
+  (third-party crates aside, `thiserror`, `winit` for input-sys's HID constants,
+  and `mlua` respectively): the ECS is simulation data and scheduling, the
+  collision and transform kernels are plain data in and out, the scene graph
+  holds topology only, the input backend/runtime pair knows nothing about
+  windows or rendering, and the script VM knows nothing about the engine.
+- `mikan-collision` depends on `mikan-collision-sys` only, `mikan-scene`
+  on `mikan-scene-sys` only, and `mikan-input` on `mikan-input-sys` plus
+  `mikan-platform` (to translate its `DeviceEvent`) — the safe wrapper pattern
+  `docs/ffi.md` prescribes.
 - `mikan-assets` depends on `mikan-core` only: no windowing, no graphics.
 - `mikan-platform` and `mikan-render` never depend on each other, and
   `mikan-render` does not depend on `mikan-assets` — the application glues
   decoded pixels into `TextureDescriptor`.
-- `mikan` may depend on all eight engine crates; it re-exports them so
+- `mikan` may depend on all engine crates; it re-exports them so
   applications need one dependency. Applications that need custom wiring can
   still use `mikan_platform::App` directly.
 - No crate depends on an application.
@@ -468,6 +504,7 @@ job; the renderer never reads a path.
 | `mikan-collision-sys` / `mikan-collision` | none | The kernel has no error channel: plain data in, plain data out, with debug assertions on the one precondition (pair indices) and separated results as the defined answer to degenerate input |
 | `mikan-scene-sys` | `GraphStatus` (`OK`, `UNKNOWN_NODE`, `CYCLE`, `BAD_ARGUMENT`) | No panics across the boundary: every entry point validates and returns a status code, and invalid arguments (including null handles) are reported, not crashed |
 | `mikan-scene` | `HierarchyError` (`UnknownEntity`, `AlreadyPresent`, `Cycle`), `SceneError` | Topology failures are values; a cycle is rejected without mutating the graph; the wrapper translates status codes and the graph is freed exactly once in `Drop` |
+| `mikan-input-sys` | `InputStatus` (`OK`, `BAD_ARGUMENT`, `NOT_FOUND`, `CONFLICT`, `UNKNOWN_CONTEXT`) plus `OVERFLOW` | No panics across the boundary: every entry point validates and returns a status code; a full event buffer drops the newest event and counts it, and allocation failure is fatal because the module builds without exceptions |
 | `mikan-script` | `ScriptError` (`Load`, `Compile`, `MissingFunction`, `Runtime`, `InvalidReturn`, `Vm`) | Load-time failures are fatal to the caller; the engine does not decide what happens next — each caller does (the demo exits on load errors and logs-once idles on run-time errors) |
 | `mikan-platform` | `PlatformError` (+ `PlatformError::app` for application errors) | Fatal errors stop the loop, run `shutdown`, and reach `main` |
 | `mikan-render` | `RenderError` | Recoverable swap-chain states are *not* errors; unrecoverable ones are |
@@ -504,8 +541,8 @@ Rules:
 
 ## 9. Native interoperability boundaries
 
-Three native subsystems exist, introduced by explicit decision — two in Phase 5,
-one in the scene milestone:
+Three first-party native subsystems and one vendored native runtime exist,
+introduced by explicit decision:
 
 - **The C99 collision kernel** (`crates/collision-sys`), wrapped by the
   safe `mikan-collision`. One batch function over plain `#[repr(C)]` data; the
@@ -523,6 +560,16 @@ one in the scene milestone:
   including the honest benchmark result: the native graph is *slower* than a
   Rust array fold because it carries real graph bookkeeping, and no speedup is
   claimed.
+- **The C device backend and C++ action runtime** (`crates/input-sys`), wrapped
+  by the safe `mikan-input`. The backend normalizes raw device events (and
+  owns raw key/button state); the runtime maps bindings to actions across
+  prioritized contexts and maintains each action's state machine. They never
+  call each other — Rust drains one and feeds the other in a single batch per
+  fixed step — and `reference` cross-checks the normalizer bit for bit. It is
+  the third crate where `unsafe` is allowed. ADR 0013 records the decision,
+  including the honest benchmark result: the C backend is slower than the Rust
+  oracle and the full engine step stays under ≈40 ns/event, with no speedup
+  claimed.
 - **The vendored Luau VM (C++)**, compiled by `mlua`'s `vendored` feature and
   consumed through the safe `mikan-script`. Mikan writes no C++ glue; the
   surface is `extern "C"` functions generated by `mlua-sys`. Scripts are
@@ -533,9 +580,9 @@ one in the scene milestone:
 The policy that governs these and any future native module — ownership, ABI,
 error translation, thread safety, and the criteria that make a module worth
 writing in C or C++ at all — is documented in [`ffi.md`](ffi.md); ADR 0004
-remains the baseline and ADR 0010 and ADR 0012 supersede it for the collision
-and scene modules only. ADRs 0006–0009 record that the four milestones before
-Phase 5 added none, with the reason.
+remains the baseline and ADRs 0010, 0012, and 0013 supersede it for the
+collision, scene, and input modules respectively. ADRs 0006–0009 record that
+the four milestones before Phase 5 added none, with the reason.
 
 ## 10. Extension points
 
@@ -557,8 +604,8 @@ These are seams the current design leaves open. None of them are implemented.
 - **Frame graph / passes.** `render_frame` is the single place where pass
   recording happens; splitting it into ordered passes is a local change.
 - **Native modules.** `docs/ffi.md` governs additions; the collision (ADR 0010),
-  Luau (ADR 0011), and scene (ADR 0012) modules are the worked examples of the
-  whole path: design, measurement, cross-check tests, Valgrind, and records in
+  Luau (ADR 0011), scene (ADR 0012), and input (ADR 0013) modules are the
+  worked examples of the whole path: design, tests, and records in
   `docs/STATUS.md`.
   ADR 0008 records why the 2D sprite-rendering milestone added none (its
   benchmark points at rasterization throughput, not at a boundary Rust

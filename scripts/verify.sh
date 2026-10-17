@@ -40,6 +40,9 @@ if command -v xvfb-run >/dev/null 2>&1; then
         echo "==> input verification: synthetic key events under Xvfb"
         RUST_LOG="${RUST_LOG:-info}" xvfb-run -a bash scripts/verify_input.sh
 
+        echo "==> action input verification: C backend and C++ runtime under Xvfb"
+        RUST_LOG="${RUST_LOG:-info}" xvfb-run -a bash scripts/verify_input_actions.sh
+
         echo "==> camera verification: follow camera and zoom under Xvfb"
         RUST_LOG="${RUST_LOG:-info}" xvfb-run -a bash scripts/verify_camera.sh
 

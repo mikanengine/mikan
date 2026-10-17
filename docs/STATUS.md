@@ -1,15 +1,23 @@
 # Mikan status
 
 - **Date:** 2026-10-17
-- **Revision:** `main` @ `5f63579` ("Implement gameplay scripting with Luau and
-  integrate collision system"). The Phase 3 change set is committed locally as
-  eight commits (`991c17e`..`5c95578`), Phase 4 (ECS-lite) as five
-  (`813cbc2`..`0f74e34`), and Phase 5 (collision + Luau scripting) as
-  `5f63579`. The Phase 7 (scene and entity system) change set is **uncommitted
-  in the working tree** on top of `5f63579`, together with the crate-directory
-  renames (`crates/mikan-*` → `crates/*`). **Pushes and CI runs still require
-  explicit authorization**, so the "Verification: CI" section below records the
-  last pushed state, and every claim in this document comes from local runs on
+- **Revision:** `main` @ `773589e` ("Add integration tests for mikan-input,
+  implement action mapping in demo2d, and create verification scripts"). The
+  Phase 3 change set is committed locally as eight commits
+  (`991c17e`..`5c95578`), Phase 4 (ECS-lite) as five (`813cbc2`..`0f74e34`),
+  Phase 5 (collision + Luau scripting) as `5f63579`, the Phase 7 (scene and
+  entity system) change set plus the crate-directory renames
+  (`crates/mikan-*` → `crates/*`) as `860d698` and its follow-up kernel-driver
+  fix as `07c6c33`, and the bulk of the Phase 8 input work (the input-sys and
+  input crates, the integration tests, the demo2d `--actions` lane, the bench
+  and verify scripts) as `773589e`. Two small uncommitted follow-ups remain:
+  a C++-runtime release fix (a release is attributed to **every context that
+  holds the input**, not only the one arbitration would currently pick, with a
+  regression test) and build-profile/build-resource tuning
+  (`.cargo/config.toml`, profile changes), plus the Phase 8 **documentation**
+  (ADR 0013, `docs/input.md`, this file, and the CI/verify wiring). **Pushes and CI runs still require explicit
+  authorization**, so the "Verification: CI" section below records the last
+  pushed state, and every claim in this document comes from local runs on
   this machine.
 - **Purpose:** state precisely what is implemented, how each claim was verified,
   and what is known to be missing. Verification levels follow ADR 0005: nothing
@@ -231,7 +239,7 @@ is, and how deferred despawn works. It is the first module with hand-written C++
 of Mikan's own, beside a C numeric kernel, with the ECS, scene policy, and
 manager kept in Rust (ADR 0012):
 
-- **`mikan-scene-sys`**, one of two crates allowed to use `unsafe`: a C compose
+- **`mikan-scene-sys`**, one of the three crates allowed to use `unsafe`: a C compose
   kernel (`src/transform.c`, `mikan_transform2d_compose`, one batch-shaped
   function over a seven-`f32` `#[repr(C)]` struct) and a hand-written C++ scene
   graph (`src/scene_graph.cpp`, one opaque `mikan_scene_graph` handle with
@@ -277,6 +285,63 @@ manager kept in Rust (ADR 0012):
   presses `F` and requires the star pixels to disappear while the sun and
   planets remain. Wired into `scripts/verify.sh` and the CI smoke job.
 
+## Milestone: the input system (action mapping over one event log) — complete
+
+The layer that turns window events into gameplay answers: what an input *means*
+(action mapping) instead of what a key did. It is the milestone where a native
+split was the starting design, and the third boundary with both C and C++ of
+Mikan's own (ADR 0013):
+
+- **`mikan-input-sys`**, the third crate allowed to use `unsafe`: a C device
+  backend (`src/input_backend.c` — the canonical event model over USB HID usage
+  IDs, a bounded event buffer, and the raw device state: duplicate
+  press/release suppression, OS-repeat normalization, move and wheel-delta
+  coalescing, synthetic releases on focus loss) and a hand-written C++ action
+  runtime (`src/input_runtime.cpp` — bindings grouped into prioritized
+  contexts, per-event arbitration with later-created tie-breaks, and the
+  per-action state machine: `held`, `just_pressed`, `just_released`,
+  `repeating`, `value = held·1.0 + this step's wheel deltas`). The two native
+  layers never call each other; Rust drains one and feeds the other in one
+  batch per fixed step, and statuses (`OK/BAD_ARGUMENT/NOT_FOUND/CONFLICT/
+  OVERFLOW/UNKNOWN_CONTEXT`) are the only language they share.
+- **`mikan-input`**, the safe face (no `unsafe`): `InputSystem` owning both
+  native halves, translating `DeviceEvent`s through the winit → HID map and
+  mapping statuses to `InputError::{UnknownKey, DuplicateBinding,
+  BindingNotFound, UnknownContext, ContextActive, Overflow, Native}`;
+  `ActionId`/`ContextId` (ids start at 1, never reused), `Binding`
+  `{Key, Button, Wheel(WheelAxis)}`, and `WheelAxis::{Horizontal, Vertical}`
+  (the one device kind where code `0` is a real binding).
+- **`mikan-platform` grew the front door**: the per-frame `DeviceEvent` log
+  gained `take_events` (a true drain), wheel-tick normalization to pixels
+  (`LineDelta` at 24 px), a bounded drop-and-count mode (`dropped_events()`),
+  and `end_frame` clearing the log, wheel residual, and edges.
+  `AppContext` now lends `&mut InputState` so one step can both read the raw
+  lane and drain the log; the raw lane's behavior is unchanged.
+- **Cross-checks are tests, not prose**: the C backend and the independent
+  Rust `Normalizer` oracle are compared bit for bit on deterministic and
+  randomized streams; the C++ runtime's arbitration, edge, wheel-value, and
+  focus-cleanup semantics are asserted one behavior per test.
+- **The demo integrates it**: `--actions` runs both lanes side by side — the
+  raw lane (mandatory) and an `ActionMapping` (`global` context, priority 10:
+  Escape → quit; `gameplay` context, priority 0: WASD/arrows → movement, `F`
+  → despawn the moon, wheel-vertical → scroll) — and the `--actions` summary
+  reports `actions: {fixed} fixed steps, {moved} moved, {wheel} wheel ticks`.
+- **The measurement is honest**: `scripts/bench_input.sh` runs the same batch
+  stream through the engine step, the C backend alone, and the Rust reference;
+  the recorded result is that **the C backend is slower than the Rust oracle**
+  (≈16 vs ≈11 ns/event; the full engine step ≈36 ns/event), and no speedup is
+  claimed. A Valgrind run of the benchmark binary reports **0 errors and 0
+  bytes lost**.
+- **The decision is explicit**: the C backend is the low-level device
+  foundation's assigned home and the context-arbitration state machine is C++'s
+  (ADR 0013) — the driver is architectural, not a profiled bottleneck.
+- **End-to-end verification**: `scripts/verify_input_actions.sh` — holding `D`
+  for 1 s moves the square to the right wall through action state; two wheel
+  notches appear as `wheel ticks ≥ 2` in the `--actions` summary; a tapped
+  `Escape` quits with exit 0 through the action-mapping press edge with the
+  same log line as the raw lane. Wired into `scripts/verify.sh` and the CI
+  smoke job.
+
 ## What is implemented
 
 | Area | What exists | Coverage |
@@ -289,10 +354,12 @@ manager kept in Rust (ADR 0012):
 | `mikan-scene-sys` | the C compose kernel (`mikan_transform2d_compose` over a seven-`f32` `#[repr(C)]` struct, `-ffp-contract=off`) and the hand-written C++ scene graph (one opaque handle, `extern "C"` entry points, status codes, warnings-as-errors and `-fno-exceptions -fno-rtti` `build.rs`); the second crate allowed `unsafe` (override and reason recorded in its crate root) | 6 unit tests, 8 integration tests (graph semantics, error paths, removal-reroots invariant, propagate ordering, bit-exact compose) |
 | `mikan-scene` | `Transform2d`/`GlobalTransform2d`, `Hierarchy` (forest invariants, re-root on removal), `DespawnQueue`, `Scene` (one world + schedule, ordered update), `SceneManager` (generational ids, one active scene), `propagate_transforms`, and `reference` — the Rust oracle, cross-checked bit for bit | 17 unit tests, 11 integration tests (scene behavior), 4 cross-check integration tests, 4 doc tests |
 | `mikan-script` | `ScriptEngine` (`from_file`/`from_source`, `call_step`, `name`, `used_memory`), `StepInput`/`StepOutput`, and `ScriptError` (`Load`, `Compile`, `MissingFunction`, `Runtime`, `InvalidReturn`, `Vm`) carrying the script name and line; explicit safe library set, Luau `sandbox(true)`, 64 MiB memory limit; vendored Luau through `mlua` 0.11.6 | 18 unit tests |
-| `mikan-platform` | `App` lifecycle trait, `AppContext`, `InputState` (held state, press/release edges, cursor delta, focus release), `winit` runner with occlusion/suspension-aware waiting | 9 unit tests, 1 doc test |
+| `mikan-platform` | `App` lifecycle trait, `AppContext` (input borrowed `&` for the raw lane, `&mut` for the event log), `InputState` (held state, press/release edges, cursor delta, focus release), the per-frame `DeviceEvent` log (`take_events` drain, wheel normalization, bounded drop-and-count), `winit` runner with occlusion/suspension-aware waiting | 14 unit tests, 1 doc test |
+| `mikan-input-sys` | the C device backend (`mikan_input_backend`: canonical events over USB HID usage IDs, raw device state, press/release/repeat normalization, move/wheel coalescing, synthetic releases on focus loss, bounded buffer) and the hand-written C++ action runtime (`mikan_input_runtime`: prioritized contexts, per-event arbitration, action state machines); warnings-as-errors and `-fno-exceptions -fno-rtti` `build.rs`; the third crate allowed `unsafe` (override and reason recorded in its crate root) | 4 unit tests, 29 integration tests (backend semantics, runtime behavior, error paths, bit-exact cross-check against the Rust normalizer) |
+| `mikan-input` | `InputSystem` (owns backend + runtime, translates `DeviceEvent`s, maps statuses to `InputError`), `ActionId`/`ContextId`, `Binding`/`WheelAxis`, the winit → HID code `map`, and `reference` — the independent Rust normalizer oracle, cross-checked bit for bit | 3 unit tests (code/button mapping), 16 integration tests (edges, arbitration, wheel values, focus, lifecycle), 1 doc test |
+| `mikan` | the `Game` lifecycle over the platform `App` (renderer created before `init`, resizes forwarded before the game sees them, `shutdown` iff `init` ran), the `Engine` handle (`AppContext` + `&Renderer` + `render_frame`), labeled renderer-startup failures, curated re-exports of all nine engine crates (including `mikan_ecs`, `mikan_collision`, `mikan_scene`, `mikan_script`, and `mikan_input` with their common types) | 3 unit tests, 2 doc tests |
 | `mikan-render` | `wgpu` instance/adapter/device/queue/surface, format/alpha/present-mode selection, explicit handling of every swap chain state, resize (including zero-sized), device-lost reporting, instanced sprite pipeline (flat or textured, per-sprite rotation, tint, alpha, linear/nearest sampling as a batch key), texture upload with declared encoding (`Linear`/`Srgb`, validated), camera view/projection matrix (including pixel-perfect), `FrameStats { sprites, batches, draw_calls }`, RGBA8 capture readback | 27 unit tests, 1 doc test |
-| `mikan` | the `Game` lifecycle over the platform `App` (renderer created before `init`, resizes forwarded before the game sees them, `shutdown` iff `init` ran), the `Engine` handle (`AppContext` + `&Renderer` + `render_frame`), labeled renderer-startup failures, curated re-exports of all eight engine crates (including `mikan_ecs`, `mikan_collision`, `mikan_scene`, and `mikan_script` with their common types) | 3 unit tests, 2 doc tests |
-| `games/demo2d` | built on the `mikan` facade: CLI (`--frames`, `--capture`, `--stats`, `--timeout`, `--scene`, `--sampler`, `--pixel-perfect`, `--assets`, `--size`, `--camera`, `--zoom`, `--no-vsync`, `--sprites`, `--script`, `--help`), four scenes, asset loading/upload/validation, the classic scene as a `mikan-ecs` world (player plus three static collision blocks, `collide` resolution, five ordered systems, interpolated rendering), the hierarchy scene as a `mikan-scene` world (sun, planets, moon, spin, deferred despawn), a Luau gameplay script driving movement (load errors fatal, runtime errors logged once with an idle fallback), PPM writer, frame-time and draw statistics | 52 unit tests |
+| `games/demo2d` | built on the `mikan` facade: CLI (`--frames`, `--capture`, `--stats`, `--timeout`, `--scene`, `--sampler`, `--pixel-perfect`, `--assets`, `--size`, `--camera`, `--zoom`, `--no-vsync`, `--sprites`, `--script`, `--actions`, `--help`), four scenes, asset loading/upload/validation, the classic scene as a `mikan-ecs` world (player plus three static collision blocks, `collide` resolution, five ordered systems, interpolated rendering), the hierarchy scene as a `mikan-scene` world (sun, planets, moon, spin, deferred despawn), a Luau gameplay script driving movement (load errors fatal, runtime errors logged once with an idle fallback), the `--actions` lane (an `ActionMapping` over `mikan-input`: global Escape-quit context above a WASD/arrows/`F`/wheel gameplay context, the shutdown summary `{fixed} fixed steps, {moved} moved, {wheel} wheel ticks`), PPM writer, frame-time and draw statistics | 55 unit tests |
 
 ## Verification: build and tests (this revision, local)
 
@@ -300,7 +367,7 @@ manager kept in Rust (ADR 0012):
 | --- | --- |
 | `cargo fmt --all -- --check` | pass |
 | `cargo check --workspace --all-targets` | pass |
-| `cargo test --workspace` | **305 pass, 0 fail** — 246 unit tests (52 demo2d, 40 mikan-assets, 42 mikan-ecs, 32 mikan-core, 27 mikan-render, 18 mikan-script, 17 mikan-scene, 9 mikan-platform, 6 mikan-scene-sys, 3 mikan), 44 integration tests (11 mikan-scene scene, 8 mikan-scene-sys graph, 7 mikan-collision-sys contacts, 6 mikan-collision broad phase, 5 mikan-ecs determinism, 4 mikan-scene cross-check, 3 mikan-collision cross-check), and 15 doc tests (4 mikan-scene, 4 mikan-ecs, 2 mikan, 2 mikan-collision, 1 mikan-assets, 1 mikan-platform, 1 mikan-render) |
+| `cargo test --workspace` | **366 pass, 0 fail** — 261 unit tests (55 demo2d, 42 mikan-ecs, 40 mikan-assets, 32 mikan-core, 27 mikan-render, 18 mikan-script, 17 mikan-scene, 14 mikan-platform, 6 mikan-scene-sys, 4 mikan-input-sys, 3 mikan, 3 mikan-input), 89 integration tests (29 mikan-input-sys — 12 backend, 15 runtime, 2 cross-check — 16 mikan-input, 15 mikan-scene — 11 scene, 4 cross-check — 9 mikan-collision — 6 broad-phase, 3 cross-check — 8 mikan-scene-sys, 7 mikan-collision-sys, 5 mikan-ecs determinism), and 16 doc tests (4 mikan-scene, 4 mikan-ecs, 2 mikan, 2 mikan-collision, 1 mikan-assets, 1 mikan-input, 1 mikan-platform, 1 mikan-render) |
 | `cargo clippy --workspace --all-targets -- -D warnings` | pass |
 | `cargo build --workspace --release` | pass |
 | `python3 scripts/generate_assets.py --check` | pass: atlas.png, star.png, atlas.json all match the generator |
@@ -320,6 +387,9 @@ format `Bgra8UnormSrgb`.
 | Texture sampling | pixel probes of the same capture | player border `(179, 129, 63)`; marker center `(160, 225, 249)` and border `(89, 149, 188)`: both atlas frames are sampled, not flat colors |
 | Draw statistics (classic) | `--stats` line | `sprites 5 | batches 2 | draw calls 2` (three blocks, the player, and the marker) |
 | Keyboard movement | `xvfb-run -a bash scripts/verify_input.sh` | holding `D` for 1 s moved the square to world `[912, 300]` (the 912-pixel wall; earlier runs land anywhere in 730..912 depending on keyup timing); a tapped `Escape` exited 0 before the frame budget |
+| Action-mapping movement | `xvfb-run -a bash scripts/verify_input_actions.sh` | holding `D` for 1 s under `--actions` moved the square through action state to the 912-pixel wall `[912, 300]` |
+| Action-mapping wheel | as above | two `click 4` wheel notches appear in the shutdown summary as `actions: {fixed} fixed steps, {moved} moved, {wheel} wheel ticks` with wheel ticks ≥ 2 |
+| Action-mapping quit | as above | a tapped `Escape` exits 0 with the same `escape pressed` log line as the raw lane, the log shows `input: action mapping active`, and no frame-budget timeout fires |
 | ECS schedule (startup) | `xvfb-run -a bash scripts/verify_ecs.sh` | startup log: `ecs: 4 entities, 11 components, systems: snapshot, input, movement, collide, clamp` |
 | ECS fixed-step integration | as above | holding `D` for ~0.5 s: `moved steps: 65 of 175 fixed steps; square at [708.0, 300.0]` — 480 + 65 × 3.5 = 707.5 rounds to 708, so every moved step was exactly one 3.5 px fixed step |
 | ECS no-input run | as above | no input for 120 frames: `0 moved steps` and `square at [480, 300]` (the fixed-step count varies with run speed); nothing moves without input |
@@ -447,30 +517,68 @@ The native-to-reference ratio under Valgrind is 10.37 — lower than the native
 run because the tool instruments both sides. This is the memory-tool record
 `docs/ffi.md` requires for a native module.
 
+## Verification: the input benchmark (this machine, CPU only)
+
+`bash scripts/bench_input.sh` runs the same deterministic batch stream — 6 key
+transitions, 2 cursor moves, 1 wheel tick per batch (9 events) — through the
+engine step (`InputSystem::process`: Rust translation + the C backend + the C++
+action runtime, then queries and `end_step`), the C backend alone (same pushes
++ drain), and the Rust `Normalizer` oracle, 40 runs each after 3 warm-ups, in
+release mode, with a bit-for-bit parity gate between the two normalizers before
+any timing is printed; the result is recorded in
+`artifacts/bench/input_65536.log` (65 536 batches):
+
+| Implementation | ns/batch | ns/event | batches/s |
+| --- | --- | --- | --- |
+| engine step (translation + backend + runtime) | 326.3 | 36.25 | ≈3.06M |
+| native backend (C, kernel only) | 143.5 | 15.94 | ≈6.97M |
+| Rust reference (Normalizer oracle) | 96.6 | 10.73 | ≈10.36M |
+
+The honest reading: **the C backend measures slower than the Rust oracle**
+(≈15.94 vs ≈10.73 ns/event — about 1.5×), and the translation/runtime
+wrapper adds the remaining gap to the engine step, which stays under
+≈40 ns/event end to end. As with collision and scene, this is the expected
+and reported result: the input module exists because the low-level device
+foundation is C's assigned home and the action state machine is C++'s (ADR
+0013), not because it beat Rust — and the parity gate proves the two
+normalizations agree bit for bit, which is the module's real contract.
+
+Valgrind (memcheck) over a full run of the benchmark binary:
+
+```
+valgrind --leak-check=full --error-exitcode=1 --log-file=artifacts/mem/input_bench_valgrind.log target/release/examples/bench_input 16384
+```
+
+exit 0; `ERROR SUMMARY: 0 errors from 0 contexts (suppressed: 0 from 0)`;
+0 bytes definitely, indirectly, or possibly lost (548 bytes still reachable in
+2 blocks — Rust runtime internals, the same figure the collision and scene
+benchmarks report). This is the memory-tool record `docs/ffi.md` requires for
+a native module.
+
 ## Verification: CI
 
-**No CI run covers the Phase 3, Phase 4, or Phase 5 commits or the Phase 7
-working tree: Phase 3, Phase 4, and Phase 5 are committed locally but not
-pushed, and Phase 7 is not even committed yet** (by policy, pushes require
-explicit authorization). The last pushed state, `9c3e98b` (documentation for the
+**No CI run covers the Phase 3, Phase 4, or Phase 5 commits, the Phase 7
+commits, or the Phase 8 working tree: the phases are committed locally (`5f63579`
+→ `773589e`) but not pushed** (by policy, pushes require explicit
+authorization). The last pushed state, `9c3e98b` (documentation for the
 facade milestone; runtime code `92398f3`/`431d894`), is green in run
-[38753924627](https://github.com/neverseeyouagainnnnn/mikan/actions/runs/38753924627):
-fmt/check/tests/clippy/release, the Xvfb smoke job (smoke, input, camera), and
-the Windows/macOS compile checks. The repository's `.github/workflows/ci.yml`
-and `scripts/verify.sh` now also run the generator check, the ecs, collision,
-scripting, and scene verifications, and the showcase, stress, pixel-perfect, and
+[38753924627](https://github.com/neverseeyouagainnnnn/mikan/actions/runs/38753924627).
+The repository's `.github/workflows/ci.yml` and `scripts/verify.sh` now also run
+the generator check; the ecs, collision, scripting, scene, and
+action-mapping-input verifications; and the showcase, stress, pixel-perfect, and
 asset-failure verifications, so the next authorized push will exercise them in
 CI. The Windows/macOS compile checks will then build the C collision kernel, the
-C transform kernel and C++ scene graph, and the vendored Luau C++ for the first
-time; the GitHub runners ship the required toolchains, but that has not been
-exercised here (no push since they were added).
+C transform kernel and C++ scene graph, the C input backend and C++ action
+runtime, and the vendored Luau C++ for the first time; the GitHub runners ship
+the required toolchains, but that has not been exercised here (no push since
+they were added).
 
 ## Verification levels by platform (ADR 0005)
 
 | Platform | Level | Evidence |
 | --- | --- | --- |
-| Linux / X11 (software Vulkan) | **runtime-verified** | local smoke, input, camera, ecs, collision, scripting, scene, showcase, stress, pixel-perfect, and asset-failure checks; CI smoke job for the previous milestone |
-| Windows x86-64 | **compile-verified** for the previous milestone | CI `cargo check --workspace --all-targets`; the new crates — including the C collision kernel, the C transform kernel and C++ scene graph, and the vendored Luau C++ — have not been compile-checked on Windows or macOS yet (no push since they were added) |
+| Linux / X11 (software Vulkan) | **runtime-verified** | local smoke, input (raw lane and action-mapping lane), camera, ecs, collision, scripting, scene, showcase, stress, pixel-perfect, and asset-failure checks; CI smoke job for the previous milestone |
+| Windows x86-64 | **compile-verified** for the previous milestone | CI `cargo check --workspace --all-targets`; the new crates — including the C collision kernel, the C transform kernel and C++ scene graph, the C input backend and C++ action runtime, and the vendored Luau C++ — have not been compile-checked on Windows or macOS yet (no push since they were added) |
 | macOS (arm64) | **compile-verified** for the previous milestone | as above |
 | Linux / Wayland | not verified | path exists through `winit`; never exercised |
 | Hardware GPU / Windows / macOS runtime | not verified | no such machine in the verification environment |
@@ -518,6 +626,14 @@ exercised here (no push since they were added).
   the current step). An entity that loses its `Transform2d` degrades to the
   parent frame rather than becoming invalid. The native graph is markedly slower
   than the Rust reference fold, as recorded above; the guide is `docs/scene.md`.
+- **Input scope (ADR 0013):** devices are keyboard, mouse buttons, the cursor's
+  absolute position, and focus — no gamepad (an analog pad is a future device
+  kind), no IME/text input, and no key-label/layout mapping (the HID table maps
+  physical codes only). Contexts are the only binding scope: there is no
+  per-scene/per-moment auto-switching, no chord/sequence detection, and
+  `value` is `held ? 1.0 : 0.0` plus this step's wheel deltas, not an analog
+  signal. The native C backend measures slower than the Rust oracle in the
+  recorded benchmark, as recorded above; the guide is `docs/input.md`.
 - **Scripting scope:** one script per engine, single-threaded, no hot reload
   (scripts load at startup). The 64 MiB limit bounds memory, not time: a long
   `mikan_step` still costs the frame it runs in. Luau numbers cross the
@@ -527,14 +643,15 @@ exercised here (no push since they were added).
 - **Capture:** blocking readback, PPM output only, restricted to RGBA8/BGRA8
   formats.
 - **Interactive paths that are not automated:** window resize, occlusion,
-  minimize/restore, close-button exit, mouse input, and focus-loss release. The
-  code paths exist and are unit-tested where they can be, but they have not
-  been exercised end to end.
+  minimize/restore, close-button exit, and mouse-pointer movement (mouse
+  *button presses* are automated only where input verification drives them).
+  The code paths exist and are unit-tested where they can be, but they have
+  not been exercised end to end.
 - **Performance:** all numbers above describe a software rasterizer. No
   hardware-GPU measurement exists, so the 10,000-sprite figure is a measured
   floor of what the pipeline submits (one draw call), not a hardware estimate.
 
-## Milestone changes (Phase 3–5 committed to `main`; Phase 7 uncommitted)
+## Milestone changes (Phases 3–7 committed locally; Phase 8 mostly committed)
 
 The facade milestone (`5ffe1c7`, `431d894`, documentation `92398f3`/`9c3e98b`)
 plus the Phase 3 change set, committed locally on 2026-10-16 as eight commits
@@ -607,8 +724,9 @@ listed here so the inventory is complete:
   and refreshed README, ARCHITECTURE, DEVELOPMENT, FFI policy, ECS guide,
   CHANGELOG, and this file.
 
-The Phase 7 (scene and entity system) change set is **uncommitted in the working
-tree** on top of `5f63579`, together with the crate-directory renames
+The Phase 7 (scene and entity system) change set was committed as `860d698`,
+with a follow-up that moves the C kernel to the C driver as `07c6c33`, on top
+of `5f63579`, together with the crate-directory renames
 (`crates/mikan-*` → `crates/*`), listed here so the inventory is complete:
 
 - **Crate renames:** every workspace crate directory drops the `mikan-` prefix
@@ -638,6 +756,52 @@ tree** on top of `5f63579`, together with the crate-directory renames
 - **Docs:** ADR 0012, `docs/scene.md`, and refreshed README, ARCHITECTURE,
   DEVELOPMENT, FFI policy, CHANGELOG, and this file.
 
+The Phase 8 input change set is mostly committed as `773589e`, listed here so
+the inventory is complete; the small follow-ups and the **documentation** (the
+last bullets) are the uncommitted remainder of this revision:
+
+- **New crates:** `crates/input-sys` (`src/mikan_input.h`, `src/input_backend.c`,
+  `src/input_runtime.cpp`, `build.rs`, `src/lib.rs` with status mirrors and
+  `keys.rs` HID constants, `src/backend.rs`/`src/runtime.rs` RAII,
+  `src/reference.rs` the Rust normalizer oracle, `tests/backend.rs`,
+  `tests/runtime.rs`, `tests/cross_check.rs`), `crates/input`
+  (`src/lib.rs`, `src/map.rs`, `src/system.rs`,
+  `examples/bench_input.rs`, `tests/integration.rs`), and their workspace
+  wiring.
+- **`mikan-platform`:** the per-frame `DeviceEvent` log (`MAX_FRAME_EVENTS`
+  bounded drop-and-count, `take_events` drain, `dropped_events()`), mouse-wheel
+  handling with `LineDelta` → pixel normalization, `end_frame` clearing log +
+  wheel residual + edges, and `AppContext` lending `&mut InputState`
+  (`input()` for the raw lane, `input_mut()` for the drain; the runner uses
+  split-field borrows).
+- **`mikan`:** re-exports of `mikan_input` with its common types
+  (`InputSystem`, `ActionId`, `Binding`, `ContextId`, `WheelAxis`,
+  `ActionState`, `InputError`) and of `DeviceEvent`.
+- **`demo2d`:** new `actions.rs` (`ActionMapping`: `global` context,
+  priority 10, Escape → quit; `gameplay` context, priority 0, WASD/arrows →
+  movement, `F` → despawn the moon, wheel-vertical → scroll); `cli.rs` gains
+  `--actions`; `demo.rs` splits `update` into the raw lane and the actions
+  lane (drain → process → queries → `end_step`) over a shared `step_with`
+  fixed-step helper, and the shutdown log gains the
+  `actions: {fixed} fixed steps, {moved} moved, {wheel} wheel ticks` summary;
+  `main.rs` module list.
+- **Scripts:** new `bench_input.sh` and `verify_input_actions.sh`; `verify.sh`
+  and the CI smoke job extended with the actions step.
+- **Follow-up fix (uncommitted):** `crates/input-sys/src/input_runtime.cpp`
+  releases a held binding in **every** context that binds it, not only in the
+  context arbitration would currently choose, so a release still reaches the
+  context that consumed the press even after a higher-priority context was
+  re-activated; `tests/runtime.rs` adds
+  `release_reaches_the_context_that_consumed_the_press` (and nothing else in
+  the runtime's semantics changed).
+- **Build-resource tuning (uncommitted):** `.cargo/config.toml` pins one Cargo
+  job, `[profile.dev] debug = 1`, and `[profile.release]` uses `lto = false`
+  with 16 codegen units, so the default build stays within this machine's
+  memory budget (`--jobs` restores parallelism).
+- **Docs (this uncommitted remainder):** ADR 0013, `docs/input.md`, the native
+  module inventory in `docs/ffi.md`, refreshed README, ARCHITECTURE,
+  DEVELOPMENT, CHANGELOG, this file, and the CI step.
+
 ## Next milestone
 
 Ordered by intended value; each needs its own design note before implementation.
@@ -649,8 +813,9 @@ Ordered by intended value; each needs its own design note before implementation.
    benchmark next to the `llvmpipe` numbers.
 
 Native C/C++ modules are no longer deferred in principle: ADR 0010 (the C
-collision kernel), ADR 0011 (the vendored C++ Luau VM), and ADR 0012 (the C
-transform kernel and Mikan's own C++ scene graph) introduced the first three,
-each with its justification and honest measurements. Every further module must
+collision kernel), ADR 0011 (the vendored C++ Luau VM), ADR 0012 (the C
+transform kernel and Mikan's own C++ scene graph), and ADR 0013 (the C input
+backend and Mikan's own C++ action runtime) introduced the first four, each
+with its justification and honest measurements. Every further module must
 still clear `docs/ffi.md` (ADR 0004) — or arrive through an equally explicit ADR
 that states what changed, as ADR 0010 and ADR 0012 did.

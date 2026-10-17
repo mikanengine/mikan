@@ -128,6 +128,18 @@ void release_binding(mikan_input_runtime *runtime, binding &held) {
     }
 }
 
+void release_held_bindings(mikan_input_runtime *runtime, uint32_t device,
+                           uint32_t code) {
+    const uint64_t key = input_key(device, code);
+    for (size_t i = 0; i < runtime->contexts.size(); ++i) {
+        std::unordered_map<uint64_t, binding>::iterator it =
+            runtime->contexts[i].bindings.find(key);
+        if (it != runtime->contexts[i].bindings.end()) {
+            release_binding(runtime, it->second);
+        }
+    }
+}
+
 }  // namespace
 
 mikan_input_runtime *mikan_input_runtime_create(void) {
@@ -327,10 +339,9 @@ int mikan_input_runtime_process(mikan_input_runtime *runtime,
                     event.type == MIKAN_INPUT_EVENT_KEY_RELEASE
                         ? MIKAN_INPUT_EVENT_KEY_PRESS
                         : MIKAN_INPUT_EVENT_MOUSE_PRESS;
-                binding *match = find_binding(runtime, device, event.code);
-                if (match != NULL) {
-                    release_binding(runtime, *match);
-                }
+                /* Release the context that consumed the press, even if a
+                 * higher-priority context became active in the meantime. */
+                release_held_bindings(runtime, device, event.code);
                 break;
             }
             case MIKAN_INPUT_EVENT_WHEEL: {

@@ -10,7 +10,7 @@ boundary promises — is [ADR 0010](adr/0010-2d-collision-and-a-c-kernel.md).
 
 | Crate | Role |
 | --- | --- |
-| `crates/collision-sys` | The native module: `src/mikan_contacts.h`, `src/contacts.c` (C99), a `build.rs` that compiles them with warnings-as-errors, the `#[repr(C)]` mirror types, and the raw `extern "C"` declaration. The only crate in the workspace allowed to use `unsafe`; the override and its reason are recorded in the crate root. |
+| `crates/collision-sys` | The native module: `src/mikan_contacts.h`, `src/contacts.c` (C99), a `build.rs` that compiles them with warnings-as-errors, the `#[repr(C)]` mirror types, and the raw `extern "C"` declaration. One of the three crates in the workspace allowed to use `unsafe`; the override and its reason are recorded in the crate root. |
 | `crates/collision` | The safe face: `Aabb`, `Pair`, `Contact`, the uniform-grid `Broadphase`, the `reference` module, and `contacts` — one safe batch function. Contains no `unsafe`; `unsafe_code` stays `forbid`. |
 
 Three layers, in call order:

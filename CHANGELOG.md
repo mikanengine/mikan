@@ -9,8 +9,29 @@ listed here.
 
 ## [Unreleased]
 
+### Changed
+
+- Reduced default build resource usage: Cargo compiles one job at a time,
+  development builds use line-level debug information, and release builds
+  disable link-time optimization in favor of 16 codegen units. Build parallelism
+  can be increased with `--jobs` on machines with spare resources.
+
 ### Added
 
+- `mikan-input-sys` (C device backend and C++ action runtime) and safe
+  `mikan-input`: ordered platform device events, keyboard and mouse bindings,
+  prioritized contexts, action edge/repeat/value states, and focus-loss
+  recovery. `demo2d --actions` demonstrates the action lane; gamepad input
+  remains unsupported. See `docs/input.md` and ADR 0013.
+- `scripts/bench_input.sh`: runs the same deterministic batch stream through
+  the engine step (translation + backend + runtime), the C backend alone, and
+  the Rust `Normalizer` oracle, reporting ns/event for each and asserting the
+  two normalizations agree bit for bit before printing times.
+- `scripts/verify_input_actions.sh`: end-to-end X11 verification of the
+  `--actions` lane — held `D` moves the square through action state, wheel
+  scrolls arrive as vertical-axis values reported in the shutdown summary, and
+  a tapped `Escape` quits cleanly through the action-mapping press edge.
+  Wired into `scripts/verify.sh` and the CI smoke job.
 - `mikan-scene-sys` and `mikan-scene`: scenes and the entity transform
   hierarchy. `Transform2d` and `GlobalTransform2d` (rotation is the source of
   truth; the composed `(cos, sin)` pair is cached so the native kernel never
