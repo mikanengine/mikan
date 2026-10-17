@@ -81,11 +81,12 @@ Open questions the milestone had to answer:
 1. **Two new crates, following the required structure in `docs/ffi.md`:**
    - `crates/scene-sys` — the native module: `src/transform.c` (C, the compose
      kernel), `src/scene_graph.cpp` (C++, the topology), the two headers, a
-     `build.rs` that compiles them together with warnings-as-errors and with
-     exceptions/RTTI disabled, the `#[repr(C)]` transform mirror, the status
-     codes, and the raw `extern "C"` declarations. `unsafe` is allowed in this
-     crate only, every occurrence carries a `// SAFETY:` comment, and the reason
-     is recorded in the crate root.
+     `build.rs` that compiles each with warnings-as-errors (the C file on the C
+     driver, the C++ file on the C++ driver with exceptions/RTTI disabled, so
+     C-only and C++-only flags never mix), the `#[repr(C)]` transform mirror,
+     the status codes, and the raw `extern "C"` declarations. `unsafe` is
+     allowed in this crate only, every occurrence carries a `// SAFETY:`
+     comment, and the reason is recorded in the crate root.
    - `crates/scene` — the safe wrapper and everything else: `Transform2d`,
      `GlobalTransform2d`, `Hierarchy`, `DespawnQueue`, `Scene`, `SceneManager`,
      and `reference` (the independent Rust compose). It contains **no unsafe**.

@@ -21,8 +21,9 @@ decision (ADR 0010, ADR 0011, ADR 0012) rather than silently:
    (`mikan_transform2d_compose`, one batch-shaped function over a seven-`f32`
    `#[repr(C)]` struct) next to a hand-written C++ scene graph
    (`mikan_scene_graph`, one opaque handle with `extern "C"` entry points and
-   status codes), with a safe wrapper (`crates/scene`), warnings-as-errors and
-   `-fno-exceptions -fno-rtti` on its own sources, cross-check tests against an
+   status codes), with a safe wrapper (`crates/scene`), warnings-as-errors on
+   its own sources (the C file built on the C driver, the C++ file on the C++
+   driver with `-fno-exceptions -fno-rtti`), cross-check tests against an
    independent Rust compose, and a recorded Valgrind run (`docs/STATUS.md`).
    Like collision it was **not** adopted on performance grounds: the native
    graph measures *slower* than a Rust array fold because it carries real graph
