@@ -1,21 +1,21 @@
 # Mikan status
 
 - **Date:** 2026-10-17
-- **Revision:** `main` @ `773589e` ("Add integration tests for mikan-input,
-  implement action mapping in demo2d, and create verification scripts"). The
-  Phase 3 change set is committed locally as eight commits
-  (`991c17e`..`5c95578`), Phase 4 (ECS-lite) as five (`813cbc2`..`0f74e34`),
-  Phase 5 (collision + Luau scripting) as `5f63579`, the Phase 7 (scene and
-  entity system) change set plus the crate-directory renames
-  (`crates/mikan-*` → `crates/*`) as `860d698` and its follow-up kernel-driver
-  fix as `07c6c33`, and the bulk of the Phase 8 input work (the input-sys and
-  input crates, the integration tests, the demo2d `--actions` lane, the bench
-  and verify scripts) as `773589e`. Two small uncommitted follow-ups remain:
-  a C++-runtime release fix (a release is attributed to **every context that
+- **Revision:** `main` @ `23be31e` ("feat: add input system with C backend and
+  C++ runtime"), with a clean working tree. The Phase 3 change set is committed
+  locally as eight commits (`991c17e`..`5c95578`), Phase 4 (ECS-lite) as five
+  (`813cbc2`..`0f74e34`), Phase 5 (collision + Luau scripting) as `5f63579`,
+  the Phase 7 (scene and entity system) change set plus the crate-directory
+  renames (`crates/mikan-*` → `crates/*`) as `860d698` and its follow-up
+  kernel-driver fix as `07c6c33`, the bulk of the Phase 8 input work (the
+  input-sys and input crates, the integration tests, the demo2d `--actions`
+  lane, the bench and verify scripts) as `773589e`, and the Phase 8 remainder —
+  the C++-runtime release fix (a release is attributed to **every context that
   holds the input**, not only the one arbitration would currently pick, with a
-  regression test) and build-profile/build-resource tuning
-  (`.cargo/config.toml`, profile changes), plus the Phase 8 **documentation**
-  (ADR 0013, `docs/input.md`, this file, and the CI/verify wiring). **Pushes and CI runs still require explicit
+  regression test), the build-profile/build-resource tuning
+  (`.cargo/config.toml`, profile changes), and the Phase 8 **documentation**
+  (ADR 0013, `docs/input.md`, this file, and the CI/verify wiring) — as
+  `23be31e`. **Pushes and CI runs still require explicit
   authorization**, so the "Verification: CI" section below records the last
   pushed state, and every claim in this document comes from local runs on
   this machine.
@@ -558,8 +558,8 @@ a native module.
 ## Verification: CI
 
 **No CI run covers the Phase 3, Phase 4, or Phase 5 commits, the Phase 7
-commits, or the Phase 8 working tree: the phases are committed locally (`5f63579`
-→ `773589e`) but not pushed** (by policy, pushes require explicit
+commits, or the Phase 8 commits: the phases are committed locally (`5f63579`
+→ `23be31e`) but not pushed** (by policy, pushes require explicit
 authorization). The last pushed state, `9c3e98b` (documentation for the
 facade milestone; runtime code `92398f3`/`431d894`), is green in run
 [38753924627](https://github.com/neverseeyouagainnnnn/mikan/actions/runs/38753924627).
@@ -651,7 +651,7 @@ they were added).
   hardware-GPU measurement exists, so the 10,000-sprite figure is a measured
   floor of what the pipeline submits (one draw call), not a hardware estimate.
 
-## Milestone changes (Phases 3–7 committed locally; Phase 8 mostly committed)
+## Milestone changes (Phases 3–7 committed locally; Phase 8 committed)
 
 The facade milestone (`5ffe1c7`, `431d894`, documentation `92398f3`/`9c3e98b`)
 plus the Phase 3 change set, committed locally on 2026-10-16 as eight commits
@@ -756,9 +756,9 @@ of `5f63579`, together with the crate-directory renames
 - **Docs:** ADR 0012, `docs/scene.md`, and refreshed README, ARCHITECTURE,
   DEVELOPMENT, FFI policy, CHANGELOG, and this file.
 
-The Phase 8 input change set is mostly committed as `773589e`, listed here so
-the inventory is complete; the small follow-ups and the **documentation** (the
-last bullets) are the uncommitted remainder of this revision:
+The Phase 8 input change set was committed as `773589e` (the bulk) and
+`23be31e` (the follow-up fix, the build-resource tuning, and the
+**documentation**), listed here so the inventory is complete:
 
 - **New crates:** `crates/input-sys` (`src/mikan_input.h`, `src/input_backend.c`,
   `src/input_runtime.cpp`, `build.rs`, `src/lib.rs` with status mirrors and
@@ -787,18 +787,20 @@ last bullets) are the uncommitted remainder of this revision:
   `main.rs` module list.
 - **Scripts:** new `bench_input.sh` and `verify_input_actions.sh`; `verify.sh`
   and the CI smoke job extended with the actions step.
-- **Follow-up fix (uncommitted):** `crates/input-sys/src/input_runtime.cpp`
+- **Follow-up fix (`23be31e`):** `crates/input-sys/src/input_runtime.cpp`
   releases a held binding in **every** context that binds it, not only in the
   context arbitration would currently choose, so a release still reaches the
   context that consumed the press even after a higher-priority context was
   re-activated; `tests/runtime.rs` adds
   `release_reaches_the_context_that_consumed_the_press` (and nothing else in
   the runtime's semantics changed).
-- **Build-resource tuning (uncommitted):** `.cargo/config.toml` pins one Cargo
-  job, `[profile.dev] debug = 1`, and `[profile.release]` uses `lto = false`
-  with 16 codegen units, so the default build stays within this machine's
-  memory budget (`--jobs` restores parallelism).
-- **Docs (this uncommitted remainder):** ADR 0013, `docs/input.md`, the native
+- **Build-resource tuning (`23be31e`):** `.cargo/config.toml` pins one Cargo
+  job (cargo config files cannot carry `[profile]` tables), and the workspace
+  `Cargo.toml` tunes the profiles itself — `[profile.dev]` keeps `debug = 1`
+  and `[profile.release]` uses `lto = false` with 16 codegen units — so the
+  default build stays within this machine's memory budget (`--jobs` restores
+  parallelism).
+- **Docs (`23be31e`, the remainder of this revision):** ADR 0013, `docs/input.md`, the native
   module inventory in `docs/ffi.md`, refreshed README, ARCHITECTURE,
   DEVELOPMENT, CHANGELOG, this file, and the CI step.
 
