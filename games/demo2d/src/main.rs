@@ -1,15 +1,18 @@
 //! Mikan 2D demo.
 //!
-//! Opens a window and renders one of three scenes: the classic driveable
-//! square, a feature showcase, or a sprite-stress scene. Assets are loaded from
-//! `games/demo2d/assets` at startup. See `--help` for the smoke-test options.
+//! Opens a window and renders one of four scenes: the classic driveable
+//! square, a transform-hierarchy sun/planets/moon, a feature showcase, or a
+//! sprite-stress scene. Assets are loaded from `games/demo2d/assets` at startup.
+//! See `--help` for the smoke-test options.
 
 mod assets;
 mod blocks;
 mod cli;
 mod demo;
+mod hierarchy;
 mod player;
 mod ppm;
+mod renderable;
 mod scene;
 
 use std::process::ExitCode;

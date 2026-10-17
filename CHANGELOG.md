@@ -11,6 +11,50 @@ listed here.
 
 ### Added
 
+- `mikan-scene-sys` and `mikan-scene`: scenes and the entity transform
+  hierarchy. `Transform2d` and `GlobalTransform2d` (rotation is the source of
+  truth; the composed `(cos, sin)` pair is cached so the native kernel never
+  computes trigonometry), a `Hierarchy` forest over entity handles (at most one
+  parent, node `0` is the "no parent" sentinel, cycles rejected without mutating
+  the graph, removal re-roots children, stable insertion and attachment order),
+  a `DespawnQueue` flushed after the schedule, a `Scene` (one `World`, one
+  `Schedule`, the ordered update: systems → `flush_despawns` →
+  `propagate_transforms`), a `SceneManager` (generational `SceneId`s, exactly one
+  active scene per update), and `reference`, an independent Rust compose kept as
+  the test oracle. The hierarchy's topology is a hand-written C++ graph
+  (`src/scene_graph.cpp`, one opaque handle, `extern "C"` entry points, status
+  codes) and its composition a C kernel (`mikan_transform2d_compose` over a
+  seven-`f32` `#[repr(C)]` struct); `mikan-scene-sys` is the second crate in the
+  workspace allowed to use `unsafe` (override and reason recorded in its crate
+  root), and `mikan-scene` and every consumer are safe Rust. The C kernel and the
+  Rust reference are cross-checked bit for bit (through `to_bits`), including a
+  large randomized hierarchy.
+- `scripts/bench_scene.sh`: runs a 100,000-node hierarchy through the native
+  graph and the Rust reference in release and records the result under
+  `artifacts/bench/`. The recorded outcome is that **the native graph is
+  markedly slower** (the reference gets topology for free); no speedup is
+  claimed, and a Valgrind run of the benchmark binary reports zero errors and
+  zero bytes lost (per `docs/ffi.md`).
+- `mikan`: re-exports of `mikan_scene` with its common types (`Transform2d`,
+  `GlobalTransform2d`, `Hierarchy`, `HierarchyError`, `Scene`, `SceneError`,
+  `SceneId`, `SceneManager`, `DespawnQueue`, and the transform functions).
+- `demo2d`: a fourth scene, `--scene hierarchy`: a sun (root), three planets
+  (children of the sun), and a moon (child of the first planet) linked by
+  `mikan-scene`, with `A`/`D` spinning the sun so the planets orbit rigidly and
+  `F` despawning the moon through the deferred queue. The classic and hierarchy
+  scenes draw through one `renderable::collect` walk over `(SpriteRenderer,
+  GlobalTransform2d)`.
+- Verification: `scripts/verify_scene.sh` — the startup layout (warm sun at
+  `[480, 300]`, blue planet at `[640, 300]`, yellow star at `[720, 300]`), the
+  moon's centroid staying one orbit radius (240 px) from the sun while its angle
+  changes by more than 5° under `D`, and the star pixels disappearing while the
+  sun and planets remain under `F`. Wired into `scripts/verify.sh` and the CI
+  smoke job.
+- Documentation: ADR 0012 (the scene module: the C kernel and hand-written C++
+  graph, the architecture rationale, and the honest slower-than-Rust
+  measurement, with ADR 0004 superseded for this module only), `docs/scene.md`,
+  and refreshed README, ARCHITECTURE, DEVELOPMENT, FFI policy, STATUS, and this
+  changelog.
 - `mikan-collision-sys` and `mikan-collision`: 2D collision. A uniform-grid
   broad phase with deterministic (sorted, deduplicated) output; `Aabb`, `Pair`,
   and `Contact` with documented semantics (overlap means `depth > 0`, touching
@@ -19,7 +63,7 @@ listed here.
   into the C99 narrow-phase kernel `mikan_contacts`; and `reference`, a Rust
   implementation of the same math kept as the test oracle and the benchmark
   baseline, cross-checked bit for bit (including a randomized 256-box case).
-  `mikan-collision-sys` is the one crate in the workspace allowed to use
+  `mikan-collision-sys` is one of the two crates in the workspace allowed to use
   `unsafe` (the ABI boundary), with the override and its reason recorded in the
   crate root; `mikan-collision` and every consumer are safe Rust.
 - `scripts/bench_collision.sh`: runs the same 250,000 candidate pairs from 512
@@ -184,6 +228,10 @@ listed here.
 
 ### Changed
 
+- Crate directories dropped the `mikan-` prefix (`crates/mikan-core` →
+  `crates/core`, and so on); package names are unchanged, so imports and the
+  dependency graph are unaffected. Workspace members and path dependencies were
+  updated accordingly.
 - `demo2d`: the classic player's movement decisions now come from a Luau
   script through `mikan-script` instead of Rust code, and the `MoveDirection`
   resource became `Controls { direction, speed }` (the script returns a
@@ -191,11 +239,13 @@ listed here.
   default script the observable behavior — 420 px/s, unaccelerated diagonals —
   is exactly what the Rust implementation produced.
 - Native code is no longer deferred in principle: `mikan-collision-sys`
-  compiles C99 sources with warnings-as-errors, and `mikan-script` compiles the
-  vendored C++ Luau VM, so a C and a C++ compiler are now build prerequisites.
-  ADR 0004 remains the policy baseline; ADR 0010 supersedes its measurement
-  criterion for the collision kernel only, with the parity result reported as
-  measured.
+  compiles C99 sources with warnings-as-errors, `mikan-scene-sys` compiles a C
+  kernel and a hand-written C++ graph (warnings-as-errors, `-fno-exceptions
+  -fno-rtti`), and `mikan-script` compiles the vendored C++ Luau VM, so a C and
+  a C++ compiler are now build prerequisites. ADR 0004 remains the policy
+  baseline; ADR 0010 and ADR 0012 supersede its measurement criterion for the
+  collision and scene modules only, each reporting its result as measured
+  (collision at parity, the scene graph slower than Rust).
 - `demo2d`: the classic scene's player state and movement code moved from the
   `Square` struct into `mikan-ecs` components, resources, and systems; the
   fixed-step arithmetic and the rendered behavior are unchanged.

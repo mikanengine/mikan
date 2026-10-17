@@ -54,13 +54,13 @@ Open questions the milestone had to answer:
 ## Decision
 
 1. **Two new crates, following the required structure in `docs/ffi.md`:**
-   - `crates/mikan-collision-sys` — the native module: C99 sources, a
+   - `crates/collision-sys` — the native module: C99 sources, a
      `build.rs` that compiles them with the `cc` crate (warnings-as-errors for
      the module's own sources), the `#[repr(C)]` mirror structs, and the raw
      `extern "C"` declarations. `unsafe` is allowed in this crate only, every
      occurrence carries a `// SAFETY:` comment, and the reason is recorded in
      the crate root.
-   - `crates/mikan-collision` — the safe wrapper and everything else: `Aabb`,
+   - `crates/collision` — the safe wrapper and everything else: `Aabb`,
      `Contact`, the uniform-grid `Broadphase`, resolution helpers, and the
      `contacts` entry point that calls the kernel. It contains **no unsafe**;
      the workspace `unsafe_code = "forbid"` lint applies unchanged.

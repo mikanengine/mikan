@@ -1,11 +1,13 @@
 //! The demo's scenes: what each one draws, at documented positions.
 //!
-//! Three scenes share one loaded [`Assets`]:
+//! Three of the demo's four scenes draw sprites built here; `classic` draws its
+//! blocks and player from entities (`crate::renderable`) and keeps only its
+//! corner marker here, because the marker is decoration rather than a simulation
+//! entity, and `hierarchy` builds its sun, planets, and moon in
+//! `crate::hierarchy`.
 //!
-//! - [`classic`]: the original demo — a driveable player square, the three
-//!   collision blocks (the same layout the `collide` system resolves against,
-//!   see [`crate::blocks`]), and a static corner marker — drawn from the
-//!   sheet's `player` and `marker` frames, with the blocks as solid quads.
+//! - [`marker_sprite`]: the classic scene's static corner marker, drawn on top
+//!   of the entity-drawn blocks and player.
 //! - [`showcase`]: a fixed gallery that makes each Phase 3 feature visible at a
 //!   known pixel position: rotation, tint, alpha, nearest vs linear sampling,
 //!   and PNG alpha from `star.png`.
@@ -29,42 +31,21 @@ pub const PLAYER_SPEED: f32 = 420.0;
 pub const MARKER_SIZE: f32 = 48.0;
 /// Distance of the marker from the bottom-left corner (classic scene).
 pub const MARKER_MARGIN: f32 = 24.0;
-/// Fill color of the classic scene's collision blocks.
-///
-/// Deliberately cool and dark: the camera and pixel-perfect verifications
-/// find the player square by "warm" pixels (red above green above blue), and
-/// a block must never satisfy that heuristic.
-pub const BLOCK_COLOR: Color = Color::rgb(0.22, 0.32, 0.44);
 
-/// The classic scene: the three blocks, the player square, and the corner
-/// marker, in painter order (the marker stays on top).
+/// The classic scene's corner marker, in painter order the last sprite drawn.
+///
+/// The blocks and the player are entities, so the demo collects them from the
+/// world; the marker sits at a fixed corner of the visible world and is drawn
+/// on top of both, exactly as it was before the entities learned to draw.
 #[must_use]
-pub fn classic<'a>(
-    assets: &'a Assets,
-    player_center: [f32; 2],
-    player_size: f32,
-    world_view: [f32; 2],
-    sampler: SamplerMode,
-) -> Vec<Sprite<'a>> {
-    let mut sprites: Vec<Sprite<'a>> = Vec::with_capacity(crate::blocks::CLASSIC_BLOCKS.len() + 2);
-    for block in crate::blocks::CLASSIC_BLOCKS {
-        sprites.push(Sprite::solid(block.center, block.size, BLOCK_COLOR));
-    }
-    sprites.push(
-        Sprite::new(player_center, [player_size, player_size], &assets.atlas)
-            .with_uv(assets.player_uv)
-            .with_sampler(sampler),
-    );
-    sprites.push(
-        Sprite::new(
-            marker_center(world_view),
-            [MARKER_SIZE, MARKER_SIZE],
-            &assets.atlas,
-        )
-        .with_uv(assets.marker_uv)
-        .with_sampler(sampler),
-    );
-    sprites
+pub fn marker_sprite(assets: &Assets, world_view: [f32; 2], sampler: SamplerMode) -> Sprite<'_> {
+    Sprite::new(
+        marker_center(world_view),
+        [MARKER_SIZE, MARKER_SIZE],
+        &assets.atlas,
+    )
+    .with_uv(assets.marker_uv)
+    .with_sampler(sampler)
 }
 
 /// Center of the classic scene's corner marker in a `world_view`-sized world.

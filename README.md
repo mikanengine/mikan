@@ -12,9 +12,11 @@ vsync, loads PNG sprites and sprite-sheet metadata from disk, draws textured
 (rotated, tinted, alpha-blended) sprites with per-sprite sampling, through a
 minimal 2D camera with an optional pixel-perfect mode, reads the keyboard, runs
 a fixed-timestep simulation whose classic-scene player is an ECS entity driven
-by explicitly ordered systems and a Luau gameplay script, resolves AABB
-collisions against the scene's static blocks, handles resize and every
-recoverable swap-chain condition, reports draw statistics, and exits cleanly.
+by explicitly ordered systems and a Luau gameplay script, links entities into a
+scene transform hierarchy (a sun, planets, and a moon that orbit rigidly, with
+deferred despawn), resolves AABB collisions against the scene's static blocks,
+handles resize and every recoverable swap-chain condition, reports draw
+statistics, and exits cleanly.
 
 | Capability | State |
 | --- | --- |
@@ -33,6 +35,7 @@ recoverable swap-chain condition, reports draw statistics, and exits cleanly.
 | Engine facade (`mikan`): one lifecycle for renderer creation, resize, errors | implemented, runtime-verified |
 | ECS-lite (`mikan-ecs`): generational entities, sparse-set components, resources, ordered systems | implemented, runtime-verified |
 | 2D collision (`mikan-collision`): uniform-grid broad phase, AABB resolution, C99 narrow phase | implemented, runtime-verified |
+| Scenes (`mikan-scene`): transform hierarchy, world transforms, one active scene, deferred despawn | implemented, runtime-verified |
 | Gameplay scripting (`mikan-script`): sandboxed Luau step contract | implemented, runtime-verified |
 | Frame statistics (sprites/batches/draw calls) and a sprite benchmark | implemented, measured |
 | Offscreen frame capture (PPM) for tests and tooling | implemented, runtime-verified |
@@ -41,17 +44,18 @@ recoverable swap-chain condition, reports draw statistics, and exits cleanly.
 ## Quick start
 
 ```bash
-git clone https://github.com/neverseeyouagainnnnn/mikan
+git clone https://github.com/mikanengine/mikan
 cd mikan
 cargo run -p demo2d --release
 ```
 
 The demo opens a 960x600 window and loads its sprites from
 `games/demo2d/assets` — a committed PNG atlas with named frames, loaded through
-`mikan-assets` and uploaded as sRGB textures. Three scenes are available:
+`mikan-assets` and uploaded as sRGB textures. Four scenes are available:
 
 ```bash
 cargo run -p demo2d --release                          # classic: drive the square
+cargo run -p demo2d --release -- --scene hierarchy     # sun, orbiting planets, and a moon
 cargo run -p demo2d --release -- --scene showcase      # rotation, tint, alpha, samplers, PNG alpha
 cargo run -p demo2d --release -- --scene stress --sprites 10000   # 10,000-sprite benchmark scene
 cargo run -p demo2d --release -- --pixel-perfect 240x150          # integer-zoomed pixel-perfect view
@@ -59,7 +63,9 @@ cargo run -p demo2d --release -- --pixel-perfect 240x150          # integer-zoom
 
 | Input | Action |
 | --- | --- |
-| `W` `A` `S` `D` or arrow keys | Move the square |
+| `W` `A` `S` `D` or arrow keys | Move the square (classic) |
+| `A` / `D` | Spin the sun, orbiting the hierarchy scene |
+| `F` | Despawn the moon (hierarchy) |
 | `Escape` | Quit |
 | Window close button | Quit |
 
@@ -68,24 +74,29 @@ interpolated, so motion stays smooth even when the display refresh rate does
 not divide the simulation rate evenly. Its movement decisions come from a Luau
 gameplay script (`--script`, default `games/demo2d/scripts/player.luau`) and its
 collisions against the scene's three static blocks are resolved by
-`mikan-collision` once per fixed step. `cargo run -p demo2d -- --help` lists
-every option; see [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md) for the full
-command reference, including headless smoke-test and benchmark modes.
+`mikan-collision` once per fixed step. The hierarchy scene's sun, planets, and
+moon are entities linked by `mikan-scene`'s transform hierarchy, so spinning the
+sun orbits them rigidly and `F` removes the moon through the deferred-despawn
+queue. `cargo run -p demo2d -- --help` lists every option; see
+[`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md) for the full command reference,
+including headless smoke-test and benchmark modes.
 
 ## Workspace layout
 
 ```
 crates/mikan                engine facade: the application lifecycle that composes the engine crates
-crates/mikan-core           configuration, time, fixed timestep, logging, 2D camera, shared types
-crates/mikan-assets         PNG decoding and sprite-sheet metadata (CPU only, no graphics)
-crates/mikan-ecs            entity/component storage, resources, and system scheduling (CPU only)
-crates/mikan-collision      2D collision: uniform-grid broad phase, AABB contacts, Rust reference math
-crates/mikan-collision-sys  the C99 narrow-phase kernel and its ABI mirror (the one unsafe crate)
-crates/mikan-script         sandboxed Luau VM and the gameplay step contract
-crates/mikan-platform       window lifecycle, input state, application runner (winit)
-crates/mikan-render         device and swap chain management, sprites and textures, capture (wgpu)
+crates/core           configuration, time, fixed timestep, logging, 2D camera, shared types
+crates/assets         PNG decoding and sprite-sheet metadata (CPU only, no graphics)
+crates/ecs            entity/component storage, resources, and system scheduling (CPU only)
+crates/collision      2D collision: uniform-grid broad phase, AABB contacts, Rust reference math
+crates/collision-sys  the C99 narrow-phase kernel and its ABI mirror (one of two unsafe crates)
+crates/scene          scenes: transforms, the entity hierarchy, deferred despawn, one active scene
+crates/scene-sys      the C transform kernel and the C++ scene graph (one of two unsafe crates)
+crates/script         sandboxed Luau VM and the gameplay step contract
+crates/platform       window lifecycle, input state, application runner (winit)
+crates/render         device and swap chain management, sprites and textures, capture (wgpu)
 games/demo2d                playable 2D demo built on the engine runtime
-docs/                       architecture, development guide, FFI policy, sprite-sheet format, ECS guide, collision and scripting guides, ADRs
+docs/                       architecture, development guide, FFI policy, sprite-sheet format, ECS, collision, scene, and scripting guides, ADRs
 ```
 
 Dependency direction is one-way and enforced by the manifests:
@@ -104,6 +115,7 @@ Dependency direction is one-way and enforced by the manifests:
                      demo2d                   (depends only on mikan)
 
 also under mikan:  mikan-collision (safe) --> mikan-collision-sys (C99 kernel)
+                   mikan-scene (safe)     --> mikan-scene-sys (C kernel + C++ graph)
                    mikan-script (mlua + vendored Luau VM, C++)
 ```
 
@@ -136,6 +148,15 @@ still meet directly in applications that wire the layers by hand. See
   implementation that doubles as the test oracle and benchmark baseline. The
   guide is [`docs/collision.md`](docs/collision.md); the honest parity result
   and the decision to use C for this layer are in ADR 0010.
+- **`mikan-scene`** — scenes and the entity transform hierarchy: `Transform2d`
+  and `GlobalTransform2d`, a parent/child `Hierarchy` (a forest with cycle
+  rejection and re-root-on-removal), a `DespawnQueue`, a `Scene` (one world,
+  one schedule, ordered update), and a `SceneManager` (generational ids, one
+  active scene). The hierarchy's topology is a hand-written C++ graph and its
+  composition a C kernel (`mikan-scene-sys`, the other crate allowed `unsafe`);
+  a Rust `reference` compose is the bit-exact test oracle and benchmark
+  baseline. The guide is [`docs/scene.md`](docs/scene.md); the decision and the
+  honest (slower-than-Rust) measurement are in ADR 0012.
 - **`mikan-script`** — sandboxed gameplay scripting: a `ScriptEngine` that
   loads a Luau script and calls its global `mikan_step` once per fixed step,
   with engine-side validation (finite `f32`s, non-negative speed, over-long
@@ -159,6 +180,7 @@ still meet directly in applications that wire the layers by hand. See
 | [`docs/sprite-sheets.md`](docs/sprite-sheets.md) | The accepted sprite-sheet JSON, validation, and the half-texel UV inset |
 | [`docs/ecs.md`](docs/ecs.md) | The ECS-lite guide: entities, components, resources, systems, determinism |
 | [`docs/collision.md`](docs/collision.md) | The collision guide: broad phase, AABB semantics, the C kernel and its boundary, demo integration |
+| [`docs/scene.md`](docs/scene.md) | The scene guide: transforms, hierarchy invariants, scene update order, deferred despawn, the native boundary and its honest measurement |
 | [`docs/scripting.md`](docs/scripting.md) | The Luau guide: the step contract, validation, sandbox, failure semantics, demo integration |
 | [`docs/ffi.md`](docs/ffi.md) | Native code policy and boundary rules |
 | [`docs/STATUS.md`](docs/STATUS.md) | What is implemented, tested, and pending |
@@ -170,7 +192,10 @@ The ECS-lite layer landed first ([`docs/ecs.md`](docs/ecs.md)); Phase 5 then
 landed 2D collision detection and resolution ([`docs/collision.md`](docs/collision.md),
 ADR 0010) together with an owner-directed addition, Luau gameplay scripting
 ([`docs/scripting.md`](docs/scripting.md), ADR 0011 — a deliberate roadmap
-amendment recorded as its own decision, not a silent substitution).
+amendment recorded as its own decision, not a silent substitution). Phase 7
+added the scene and entity transform hierarchy
+([`docs/scene.md`](docs/scene.md), ADR 0012), whose topology is a hand-written
+C++ graph and whose composition is a C kernel.
 
 Next milestones, in order of intended value:
 
@@ -179,10 +204,11 @@ Next milestones, in order of intended value:
    hardware-GPU measurement of the sprite benchmark.
 
 3D work is deliberately out of scope until the 2D foundation is stable. Native
-modules are no longer all deferred: ADR 0010 (the C99 collision kernel) and ADR
-0011 (the vendored C++ Luau VM) introduced the first two, each with an explicit
-decision and honest measurements per ADR 0004 and [`docs/ffi.md`](docs/ffi.md);
-ADRs 0006–0009 record why the earlier milestones were Rust-only.
+modules are no longer all deferred: ADR 0010 (the C99 collision kernel), ADR
+0011 (the vendored C++ Luau VM), and ADR 0012 (the C transform kernel and the
+C++ scene graph) introduced the first three, each with an explicit decision and
+honest measurements per ADR 0004 and [`docs/ffi.md`](docs/ffi.md); ADRs 0006–0009
+record why the earlier milestones were Rust-only.
 
 ## Platform support
 

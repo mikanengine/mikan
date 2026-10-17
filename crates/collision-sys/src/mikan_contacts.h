@@ -2,8 +2,8 @@
  * Mikan collision narrow phase — the engine's one native entry point.
  *
  * This header is the contract; the Rust wrapper mirrors it in
- * crates/mikan-collision-sys/src/lib.rs and the reference implementation in
- * crates/mikan-collision/src/reference.rs, and the test suite cross-checks the
+ * crates/collision-sys/src/lib.rs and the reference implementation in
+ * crates/collision/src/reference.rs, and the test suite cross-checks the
  * three against each other.
  *
  * Semantics of mikan_contacts:

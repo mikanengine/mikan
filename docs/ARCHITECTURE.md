@@ -32,20 +32,22 @@ as not implemented.
   ECS-lite crate exists; see §2.)
 - 3D rendering, PBR, shadows, or post-processing.
 - Native C/C++ modules without a concrete, documented justification (ADR 0004).
-  The two Phase 5 modules are recorded in ADR 0010 and ADR 0011; neither is
-  speculative.
+  The native modules are recorded in ADR 0010 (collision), ADR 0011 (Luau), and
+  ADR 0012 (scene); none is speculative.
 
 ## 2. Crate responsibilities
 
 ```
-crates/mikan-core            no dependencies on windowing or graphics
-crates/mikan-assets          PNG decoding and sprite-sheet metadata; no graphics
-crates/mikan-ecs             entity/component storage and system scheduling; no workspace deps
-crates/mikan-collision-sys   the C99 narrow-phase kernel and its ABI mirror; the one unsafe crate
-crates/mikan-collision       safe collision face: broad phase, reference math, batch contacts
-crates/mikan-script          sandboxed Luau VM and the gameplay step contract
-crates/mikan-platform        winit is its only OS dependency; no graphics
-crates/mikan-render          wgpu is its only graphics dependency; no event handling
+crates/core            no dependencies on windowing or graphics
+crates/assets          PNG decoding and sprite-sheet metadata; no graphics
+crates/ecs             entity/component storage and system scheduling; no workspace deps
+crates/collision-sys   the C99 narrow-phase kernel and its ABI mirror; uses unsafe
+crates/collision       safe collision face: broad phase, reference math, batch contacts
+crates/scene-sys       the C compose kernel and the C++ scene graph; uses unsafe
+crates/scene           safe scene face: transforms, hierarchy, scenes, manager
+crates/script          sandboxed Luau VM and the gameplay step contract
+crates/platform        winit is its only OS dependency; no graphics
+crates/render          wgpu is its only graphics dependency; no event handling
 crates/mikan                 facade: one lifecycle that composes the engine crates
 games/demo2d                 application: implements the facade's Game trait, owns gameplay
 ```
@@ -123,7 +125,7 @@ native module.
 The collision boundary, split the way `docs/ffi.md` requires. `-sys` owns the
 C99 kernel (`mikan_contacts`, one batch function over plain `#[repr(C)]`
 structs), its warnings-as-errors `build.rs`, and the raw `extern "C"`
-declaration; it is the one crate where `unsafe` is allowed, with the reason
+declaration; it is one of the crates where `unsafe` is allowed, with the reason
 recorded in its crate root. `mikan-collision` is the safe face: `Aabb`/`Pair`/
 `Contact`, the uniform-grid `Broadphase`, the batch `contacts` call, and
 `reference` — a Rust implementation of the same math kept as the test oracle
@@ -134,6 +136,23 @@ parity-with-Rust benchmark result and why the kernel exists anyway.
 
 Neither crate depends on the rest of the engine, so collision math is testable
 without a window or a GPU.
+
+### `mikan-scene-sys` and `mikan-scene`
+
+The scene boundary, split the same way. `-sys` owns a C compose kernel
+(`mikan_transform2d_compose`, one batch-shaped function over a seven-`f32`
+`#[repr(C)]` struct) and a hand-written C++ scene graph (one opaque
+`mikan_scene_graph` handle with `extern "C"` entry points and status codes); its
+`build.rs` compiles both with warnings-as-errors and `-fno-exceptions
+-fno-rtti`, and `unsafe` is allowed there with the reason recorded in the crate
+root. `mikan-scene` is the safe face: `Transform2d`/`GlobalTransform2d`, the
+`Hierarchy` RAII wrapper, the `DespawnQueue`, `Scene` (one world, one schedule,
+and the update order), `SceneManager`, `propagate_transforms`, and `reference` —
+an independent Rust compose kept as the test oracle and benchmark baseline (the
+two are cross-checked bit for bit). The guide is `docs/scene.md`, the decision
+ADR 0012 — including the honest result that the native graph is slower than a
+Rust array fold, and why it exists anyway. Neither crate depends on the rest of
+the engine, so scene math and topology are testable without a window or a GPU.
 
 ### `mikan-script`
 
@@ -203,17 +222,21 @@ created, driven, and torn down.
   `init` ran, and translates game errors into `PlatformError`. The event loop
   itself remains `mikan_platform::run`; the facade adds one adapter, not a
   second runtime.
-- Curated re-exports of all seven engine crates, including `mikan_assets`,
-  `mikan_ecs`, `mikan_collision`, and `mikan_script`, so an application needs
-  one dependency for the common case.
+- Curated re-exports of all eight engine crates, including `mikan_assets`,
+  `mikan_ecs`, `mikan_collision`, `mikan_scene`, and `mikan_script`, so an
+  application needs one dependency for the common case.
 
 ### `games/demo2d`
 
 The application. It implements the facade's `Game` trait, owns gameplay state
-(the classic scene's player entity and the `mikan-ecs` schedule that drives
-it, in `player.rs`), and contains the command-line interface, three scenes
-(classic, showcase, stress), asset loading and upload, the PPM writer, and the
-frame-time and draw statistics. Its assets (`atlas.png`, `atlas.json`,
+(the classic scene's player entity and the `mikan-ecs` schedule that drives it,
+in `player.rs`; the sun/planet/moon hierarchy in `hierarchy.rs`), and contains
+the command-line interface, four scenes (classic, hierarchy, showcase, stress),
+asset loading and upload, the PPM writer, and the frame-time and draw
+statistics. The classic and hierarchy scenes are built on `mikan-scene`: their
+sprites are collected from `(SpriteRenderer, GlobalTransform2d)` entities by
+`renderable.rs`, and the hierarchy's rigid rotation and deferred despawn are the
+scene system's observable behavior. Its assets (`atlas.png`, `atlas.json`,
 `star.png`) are committed files produced by `scripts/generate_assets.py` and
 loaded through `mikan-assets` at startup. It depends on `mikan` only; the
 other layers reach it through the facade's re-exports.
@@ -242,31 +265,40 @@ other layers reach it through the facade's re-exports.
       |     |  +-----------+------------+             |             |
       |     |  | mikan-collision (safe) |             |             |
       |     |  +-----------+------------+             |             |
-      +-----+--------------+--------------------------+-------------+
-                                  |
-                             +----+----+
-                             |  mikan  |   (facade: Game, Engine, run)
-                             +----+----+
-                                  |
-                             +----+----+
-                             | demo2d  |   (depends only on mikan)
-                             +---------+
+      |     |  +------------------------+             |             |
+      |     |  | mikan-scene-sys        |             |             |
+      |     |  | (C kernel + C++ graph; |             |             |
+      |     |  |  unsafe)               |             |             |
+      |     |  +-----------+------------+             |             |
+      |     |  +-----------+------------+             |             |
+      |     |  | mikan-scene (safe)     |             |             |
+      |     |  +------------------------+             |             |
+      +-----+------------------------+----------------+-------------+
+                                   |
+                              +----+----+
+                              |  mikan  |   (facade: Game, Engine, run)
+                              +----+----+
+                                   |
+                              +----+----+
+                              | demo2d  |   (depends only on mikan)
+                              +---------+
 ```
 
 Rules that keep this acyclic and comprehensible:
 
-- `mikan-core`, `mikan-ecs`, `mikan-collision-sys`, and `mikan-script` depend
-  on nothing else in the workspace (third-party crates aside, `thiserror` and
-  `mlua` respectively): the ECS is simulation data and scheduling, the
-  collision kernel is plain data in and out, and the script VM knows nothing
-  about the engine.
-- `mikan-collision` depends on `mikan-collision-sys` only — the safe wrapper
-  pattern `docs/ffi.md` prescribes.
+- `mikan-core`, `mikan-ecs`, `mikan-collision-sys`, `mikan-scene-sys`, and
+  `mikan-script` depend on nothing else in the workspace (third-party crates
+  aside, `thiserror` and `mlua` respectively): the ECS is simulation data and
+  scheduling, the collision and transform kernels are plain data in and out,
+  the scene graph holds topology only, and the script VM knows nothing about the
+  engine.
+- `mikan-collision` depends on `mikan-collision-sys` only, and `mikan-scene`
+  on `mikan-scene-sys` only — the safe wrapper pattern `docs/ffi.md` prescribes.
 - `mikan-assets` depends on `mikan-core` only: no windowing, no graphics.
 - `mikan-platform` and `mikan-render` never depend on each other, and
   `mikan-render` does not depend on `mikan-assets` — the application glues
   decoded pixels into `TextureDescriptor`.
-- `mikan` may depend on all seven engine crates; it re-exports them so
+- `mikan` may depend on all eight engine crates; it re-exports them so
   applications need one dependency. Applications that need custom wiring can
   still use `mikan_platform::App` directly.
 - No crate depends on an application.
@@ -434,6 +466,8 @@ job; the renderer never reads a path.
 | `mikan-assets` | `ImageError`, `SheetError` | Files are validated at load: limits, encodings, rectangles, pivots; a bad asset is an error before it reaches the GPU |
 | `mikan-ecs` | `DeadEntity` | A component operation on a dead handle returns it; the only panic is the documented `iter2_mut` misuse (two identical component types) |
 | `mikan-collision-sys` / `mikan-collision` | none | The kernel has no error channel: plain data in, plain data out, with debug assertions on the one precondition (pair indices) and separated results as the defined answer to degenerate input |
+| `mikan-scene-sys` | `GraphStatus` (`OK`, `UNKNOWN_NODE`, `CYCLE`, `BAD_ARGUMENT`) | No panics across the boundary: every entry point validates and returns a status code, and invalid arguments (including null handles) are reported, not crashed |
+| `mikan-scene` | `HierarchyError` (`UnknownEntity`, `AlreadyPresent`, `Cycle`), `SceneError` | Topology failures are values; a cycle is rejected without mutating the graph; the wrapper translates status codes and the graph is freed exactly once in `Drop` |
 | `mikan-script` | `ScriptError` (`Load`, `Compile`, `MissingFunction`, `Runtime`, `InvalidReturn`, `Vm`) | Load-time failures are fatal to the caller; the engine does not decide what happens next — each caller does (the demo exits on load errors and logs-once idles on run-time errors) |
 | `mikan-platform` | `PlatformError` (+ `PlatformError::app` for application errors) | Fatal errors stop the loop, run `shutdown`, and reach `main` |
 | `mikan-render` | `RenderError` | Recoverable swap-chain states are *not* errors; unrecoverable ones are |
@@ -470,15 +504,25 @@ Rules:
 
 ## 9. Native interoperability boundaries
 
-Two native subsystems exist, both introduced in Phase 5 by explicit decision:
+Three native subsystems exist, introduced by explicit decision — two in Phase 5,
+one in the scene milestone:
 
-- **The C99 collision kernel** (`crates/mikan-collision-sys`), wrapped by the
+- **The C99 collision kernel** (`crates/collision-sys`), wrapped by the
   safe `mikan-collision`. One batch function over plain `#[repr(C)]` data; the
-  kernel keeps no state, allocates nothing, and cannot fail. It is the one
-  crate where `unsafe` is allowed (a workspace lint override whose reason is
+  kernel keeps no state, allocates nothing, and cannot fail. It is one of the
+  crates where `unsafe` is allowed (a workspace lint override whose reason is
   recorded in the crate root); the wrapper and every consumer are safe Rust.
   ADR 0010 records the decision, including the honest benchmark result: parity
   with the Rust reference, no speedup claimed.
+- **The C transform kernel and C++ scene graph** (`crates/scene-sys`), wrapped
+  by the safe `mikan-scene`. The kernel composes one `#[repr(C)]` transform from
+  a parent and a local one; the graph holds the parent/children topology behind
+  one opaque `extern "C"` handle, keeps no transforms, and returns a status code
+  from every entry point. It is the second crate where `unsafe` is allowed and
+  the first with hand-written C++ of Mikan's own. ADR 0012 records the decision,
+  including the honest benchmark result: the native graph is *slower* than a
+  Rust array fold because it carries real graph bookkeeping, and no speedup is
+  claimed.
 - **The vendored Luau VM (C++)**, compiled by `mlua`'s `vendored` feature and
   consumed through the safe `mikan-script`. Mikan writes no C++ glue; the
   surface is `extern "C"` functions generated by `mlua-sys`. Scripts are
@@ -489,9 +533,9 @@ Two native subsystems exist, both introduced in Phase 5 by explicit decision:
 The policy that governs these and any future native module — ownership, ABI,
 error translation, thread safety, and the criteria that make a module worth
 writing in C or C++ at all — is documented in [`ffi.md`](ffi.md); ADR 0004
-remains the baseline and ADR 0010 supersedes it for the collision kernel only.
-ADRs 0006–0009 record that the four milestones before Phase 5 added none, with
-the reason.
+remains the baseline and ADR 0010 and ADR 0012 supersede it for the collision
+and scene modules only. ADRs 0006–0009 record that the four milestones before
+Phase 5 added none, with the reason.
 
 ## 10. Extension points
 
@@ -512,9 +556,10 @@ These are seams the current design leaves open. None of them are implemented.
   once a profiled need exists. Nothing is stubbed today.
 - **Frame graph / passes.** `render_frame` is the single place where pass
   recording happens; splitting it into ordered passes is a local change.
-- **Native modules.** `docs/ffi.md` governs additions; the Phase 5 modules
-  (ADR 0010, ADR 0011) are the worked examples of the whole path: design,
-  measurement, cross-check tests, Valgrind, and records in `docs/STATUS.md`.
+- **Native modules.** `docs/ffi.md` governs additions; the collision (ADR 0010),
+  Luau (ADR 0011), and scene (ADR 0012) modules are the worked examples of the
+  whole path: design, measurement, cross-check tests, Valgrind, and records in
+  `docs/STATUS.md`.
   ADR 0008 records why the 2D sprite-rendering milestone added none (its
   benchmark points at rasterization throughput, not at a boundary Rust
   expresses badly), and ADR 0009 why the ECS-lite milestone added none: its

@@ -10,8 +10,8 @@ boundary promises — is [ADR 0010](adr/0010-2d-collision-and-a-c-kernel.md).
 
 | Crate | Role |
 | --- | --- |
-| `crates/mikan-collision-sys` | The native module: `src/mikan_contacts.h`, `src/contacts.c` (C99), a `build.rs` that compiles them with warnings-as-errors, the `#[repr(C)]` mirror types, and the raw `extern "C"` declaration. The only crate in the workspace allowed to use `unsafe`; the override and its reason are recorded in the crate root. |
-| `crates/mikan-collision` | The safe face: `Aabb`, `Pair`, `Contact`, the uniform-grid `Broadphase`, the `reference` module, and `contacts` — one safe batch function. Contains no `unsafe`; `unsafe_code` stays `forbid`. |
+| `crates/collision-sys` | The native module: `src/mikan_contacts.h`, `src/contacts.c` (C99), a `build.rs` that compiles them with warnings-as-errors, the `#[repr(C)]` mirror types, and the raw `extern "C"` declaration. The only crate in the workspace allowed to use `unsafe`; the override and its reason are recorded in the crate root. |
+| `crates/collision` | The safe face: `Aabb`, `Pair`, `Contact`, the uniform-grid `Broadphase`, the `reference` module, and `contacts` — one safe batch function. Contains no `unsafe`; `unsafe_code` stays `forbid`. |
 
 Three layers, in call order:
 
@@ -48,7 +48,7 @@ Three layers, in call order:
 ## The C kernel and its boundary
 
 The ABI is one function and three plain structs (`mikan_aabb`, `mikan_pair`,
-`mikan_contact`), all documented in `crates/mikan-collision-sys/src/mikan_contacts.h`:
+`mikan_contact`), all documented in `crates/collision-sys/src/mikan_contacts.h`:
 
 ```c
 void mikan_contacts(const mikan_aabb *bounds, size_t bounds_len,

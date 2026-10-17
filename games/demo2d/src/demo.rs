@@ -1,30 +1,43 @@
-//! The demo application: three scenes over the engine's real runtime.
+//! The demo application: four scenes over the engine's real runtime.
 //!
 //! Everything gameplay-facing lives here. The demo implements [`Game`], so it
 //! is driven by the engine's real runtime through the facade: the facade owns
 //! the renderer and forwards resizes, `mikan-platform` owns the window, input,
-//! and timing, and `mikan-render` draws. The classic scene's player is a
-//! `mikan-ecs` entity whose systems run once per fixed step (see
-//! [`crate::player`]), and its movement decisions come from a Luau script
-//! loaded through `mikan-script` (the `--script` option; ADR 0011).
+//! and timing, and `mikan-render` draws.
 //!
-//! Assets are real files loaded by `mikan-assets` at startup (see
-//! [`crate::assets`]); the sprite layouts are in [`crate::scene`].
+//! The ECS-driven scenes own a `mikan_scene::Scene`, which pairs a `World` with
+//! a `Schedule` and the scene update order (systems, then deferred despawns,
+//! then transform propagation). The classic scene's blocks and player are
+//! entities with a `Transform2d` and a [`SpriteRenderer`]; each fixed step
+//! moves the player's local transform and the scene propagates a
+//! `GlobalTransform2d` that [`renderable`] turns into a sprite. The
+//! `--scene hierarchy` scene goes further: its sun, planets, and moon are
+//! linked by the transform hierarchy, so spinning the sun orbits its
+//! descendants without per-body code.
+//!
+//! The classic player's movement decisions come from a Luau script loaded
+//! through `mikan-script` (the `--script` option; ADR 0011). Assets are real
+//! files loaded by `mikan-assets` at startup (see [`crate::assets`]); the
+//! immediate-mode sprite layouts are in [`crate::scene`].
+//!
+//! [`SpriteRenderer`]: crate::renderable::SpriteRenderer
 
 use std::time::Duration;
 
 use mikan::{
     Camera2d, CaptureBuffer, DeadEntity, Engine, Entity, Frame, FrameOutcome, FrameStats, Game,
-    KeyCode, PhysicalKey, RenderError, SamplerMode, Schedule, ScriptEngine, ScriptError, Sprite,
-    StepInput, World,
+    KeyCode, PhysicalKey, RenderError, SamplerMode, Scene, ScriptEngine, ScriptError, Sprite,
+    StepInput, Transform2d,
 };
 use thiserror::Error;
 
 use crate::assets::{AssetError, Assets};
 use crate::blocks;
-use crate::cli::{CameraMode, Cli, Scene};
-use crate::player::{Collider, Controls, Motion, Player, Position, PreviousPosition, WorldBounds};
+use crate::cli::{CameraMode, Cli, Scene as DemoScene};
+use crate::hierarchy::{self, HierarchyScene, HierarchySetupError};
+use crate::player::{Collider, Controls, Motion, Player, PreviousPosition, WorldBounds};
 use crate::ppm;
+use crate::renderable::{self, SpriteRenderer};
 use crate::scene::{self, StressLayout};
 
 /// Failures the demo itself can report.
@@ -42,9 +55,13 @@ pub enum DemoError {
     #[error(transparent)]
     Image(#[from] ppm::PpmError),
 
-    /// Spawning the player entity failed (a handle was not alive).
+    /// Spawning or linking entities failed (a handle was not alive).
     #[error(transparent)]
     Ecs(#[from] DeadEntity),
+
+    /// Building the hierarchy scene failed.
+    #[error(transparent)]
+    Hierarchy(#[from] HierarchySetupError),
 
     /// The gameplay script could not be loaded or validated.
     #[error(transparent)]
@@ -75,11 +92,13 @@ pub struct Demo {
     /// Textures and sheet loaded at startup, kept alive for the sprites that
     /// borrow them.
     assets: Option<Assets>,
-    /// The classic scene's simulation: one player entity and its schedule.
-    world: World,
-    schedule: Schedule,
-    /// The player entity, spawned in [`Game::init`].
+    /// The ECS-driven scenes' simulation: a world, its schedule, and the
+    /// update order that propagates world transforms.
+    scene: Scene,
+    /// The classic scene's player entity, spawned in [`Game::init`].
     player: Option<Entity>,
+    /// The hierarchy scene's bodies, spawned in [`Game::init`].
+    hierarchy: Option<HierarchyScene>,
     /// The gameplay script driving the player, loaded in [`Game::init`].
     script: Option<ScriptEngine>,
     /// A script step error has already been logged; later ones are suppressed
@@ -107,13 +126,14 @@ impl Demo {
     /// Builds the demo from parsed command-line options.
     #[must_use]
     pub fn new(cli: Cli) -> Self {
+        let scene = Scene::new(cli.scene.name());
         Self {
             capture: cli.capture.as_ref().map(|_| CaptureBuffer::new()),
             cli,
             assets: None,
-            world: World::new(),
-            schedule: crate::player::schedule(),
+            scene,
             player: None,
+            hierarchy: None,
             script: None,
             script_error_reported: false,
             fixed_steps: 0,
@@ -162,21 +182,35 @@ impl Demo {
         alpha: f32,
     ) -> Vec<Sprite<'a>> {
         let sampler = self.sampler();
-        let world = self.world_view(viewport);
+        let world_view = self.world_view(viewport);
+        let mut sprites = Vec::new();
         match self.cli.scene {
-            Scene::Classic => {
-                let (center, size) = self.player_pose(alpha);
-                scene::classic(assets, center, size, world, sampler)
+            DemoScene::Classic => {
+                // The blocks and the player are entities; the marker stays a
+                // constant drawn over them.
+                let override_position = self
+                    .player
+                    .map(|entity| (entity, self.player_pose(alpha).0));
+                renderable::collect(
+                    self.scene.world(),
+                    assets,
+                    sampler,
+                    override_position,
+                    &mut sprites,
+                );
+                sprites.push(scene::marker_sprite(assets, world_view, sampler));
             }
-            Scene::Showcase => scene::showcase(assets, sampler),
-            Scene::Stress => {
-                let mut sprites = Vec::new();
+            DemoScene::Hierarchy => {
+                renderable::collect(self.scene.world(), assets, sampler, None, &mut sprites);
+            }
+            DemoScene::Showcase => sprites = scene::showcase(assets, sampler),
+            DemoScene::Stress => {
                 if let Some(layout) = self.layout.as_ref() {
                     scene::stress_sprites(assets, layout, elapsed, sampler, &mut sprites);
                 }
-                sprites
             }
         }
+        sprites
     }
 
     /// Camera for this frame, or `None` for the pixel-space view.
@@ -205,7 +239,7 @@ impl Demo {
     /// nothing visible instead of panicking.
     fn player_pose(&self, alpha: f32) -> ([f32; 2], f32) {
         self.player
-            .and_then(|entity| crate::player::render_pose(&self.world, entity, alpha))
+            .and_then(|entity| crate::player::render_pose(self.scene.world(), entity, alpha))
             .unwrap_or(([0.0, 0.0], 0.0))
     }
 
@@ -278,6 +312,49 @@ impl Demo {
             1_000.0 / mean.max(f32::EPSILON),
         );
     }
+
+    /// The number of gameplay components the ECS scenes carry, counted across
+    /// the classic player and blocks.
+    ///
+    /// Deliberately narrow: the renderable and derived components
+    /// ([`SpriteRenderer`], `GlobalTransform2d`) are not simulation state, so
+    /// the startup summary counts only the five types the systems read and
+    /// write.
+    fn gameplay_components(&self) -> usize {
+        let world = self.scene.world();
+        world.component_count::<Transform2d>()
+            + world.component_count::<PreviousPosition>()
+            + world.component_count::<Motion>()
+            + world.component_count::<Player>()
+            + world.component_count::<Collider>()
+    }
+
+    /// Spawns the classic scene's entities: the blocks, then the player.
+    fn spawn_classic(&mut self, view: [f32; 2], assets: &Assets) -> Result<(), DemoError> {
+        let world = self.scene.world_mut();
+        world.insert_resource(WorldBounds(view));
+        world.insert_resource(Controls {
+            direction: [0.0, 0.0],
+            speed: 0.0,
+        });
+        // The blocks are spawned before the player: `renderable::collect`
+        // draws entities in `SpriteRenderer` insertion order, so this keeps
+        // the pillar under the player, as the pre-entity layout drew them.
+        let _blocks = blocks::spawn_blocks(world)?;
+        let player = crate::player::spawn_player(
+            world,
+            [view[0] * 0.5, view[1] * 0.5],
+            scene::PLAYER_SIZE,
+            scene::PLAYER_SPEED,
+        )?;
+        world.insert(
+            player,
+            SpriteRenderer::atlas([scene::PLAYER_SIZE; 2], assets.player_uv),
+        )?;
+        self.player = Some(player);
+        *self.scene.schedule_mut() = crate::player::schedule();
+        Ok(())
+    }
 }
 
 /// Display name of a sampler mode, for logs and statistics.
@@ -340,38 +417,48 @@ impl Game for Demo {
         // Start where the scene's default view is centered: the visible world
         // region's middle, so the player is on screen in every mode.
         let view = self.world_view([width as f32, height as f32]);
-        self.world.insert_resource(WorldBounds(view));
-        self.world.insert_resource(Controls {
-            direction: [0.0, 0.0],
-            speed: 0.0,
-        });
-        let player = crate::player::spawn_player(
-            &mut self.world,
-            [view[0] * 0.5, view[1] * 0.5],
-            scene::PLAYER_SIZE,
-            scene::PLAYER_SPEED,
-        )?;
-        self.player = Some(player);
-        blocks::spawn_blocks(&mut self.world)?;
+
+        match self.cli.scene {
+            DemoScene::Classic => self.spawn_classic(view, &assets)?,
+            DemoScene::Hierarchy => {
+                let bodies = hierarchy::spawn(&mut self.scene, assets.player_uv, assets.marker_uv)?;
+                self.hierarchy = Some(bodies);
+            }
+            DemoScene::Showcase | DemoScene::Stress => {}
+        }
+        // The first frame may render before the first fixed step runs, so the
+        // scene's world transforms are propagated once here.
+        self.scene.propagate();
+
         log::info!(
             "ecs: {} entities, {} components, systems: {}",
-            self.world.entity_count(),
-            self.world.component_count::<Position>()
-                + self.world.component_count::<PreviousPosition>()
-                + self.world.component_count::<Motion>()
-                + self.world.component_count::<Player>()
-                + self.world.component_count::<Collider>(),
-            self.schedule.names().collect::<Vec<_>>().join(", "),
+            self.scene.entity_count(),
+            self.gameplay_components(),
+            self.scene.systems().collect::<Vec<_>>().join(", "),
         );
-        log::info!(
-            "collision: {} static blocks, grid cell {}",
-            blocks::CLASSIC_BLOCKS.len(),
-            blocks::GRID_CELL,
-        );
+        if self.cli.scene == DemoScene::Classic {
+            log::info!(
+                "collision: {} static blocks, grid cell {}",
+                blocks::CLASSIC_BLOCKS.len(),
+                blocks::GRID_CELL,
+            );
+        }
+        if let Some(bodies) = self.hierarchy {
+            let planets: Vec<Entity> = (0..hierarchy::PLANET_COUNT)
+                .map(|index| bodies.planet(index))
+                .collect();
+            log::info!(
+                "hierarchy: sun {} + {planets:?} + moon {} | orbit {}, moon orbit {} | A/D spin, F despawn",
+                bodies.sun(),
+                bodies.moon(),
+                hierarchy::ORBIT_RADIUS,
+                hierarchy::MOON_ORBIT_RADIUS,
+            );
+        }
         let script = ScriptEngine::from_file(&self.cli.script)?;
         log::info!("script: {} (mikan_step)", self.cli.script.display());
         self.script = Some(script);
-        if self.cli.scene == Scene::Stress {
+        if self.cli.scene == DemoScene::Stress {
             let layout =
                 StressLayout::new(self.cli.stress_sprites(), [width as f32, height as f32]);
             log::info!(
@@ -398,10 +485,10 @@ impl Game for Demo {
         }
 
         // The step's external state, written before the systems run: the
-        // controls the gameplay script asks for and the region the player is
-        // kept in. The script sees the held keys, the step duration, and the
-        // player's position — never the world itself.
-        let (left, right, up, down) = {
+        // controls the gameplay script asks for, the region the player is
+        // kept in, and the hierarchy's spin. The script sees the held keys,
+        // the step duration, and the player's position — never the world.
+        let (left, right, up, down, despawn_moon) = {
             let input = engine.ctx().input();
             let held = |key: KeyCode| input.is_key_pressed(PhysicalKey::Code(key));
             (
@@ -409,12 +496,13 @@ impl Game for Demo {
                 held(KeyCode::KeyD) || held(KeyCode::ArrowRight),
                 held(KeyCode::KeyW) || held(KeyCode::ArrowUp),
                 held(KeyCode::KeyS) || held(KeyCode::ArrowDown),
+                input.is_key_just_pressed(PhysicalKey::Code(KeyCode::KeyF)),
             )
         };
         let position = self
             .player
-            .and_then(|entity| self.world.get::<Position>(entity))
-            .map_or([0.0, 0.0], |position| position.0);
+            .and_then(|entity| self.scene.world().get::<Transform2d>(entity))
+            .map_or([0.0, 0.0], |transform| transform.translation);
         let controls = match self.script.as_ref() {
             Some(script) => match script.call_step(StepInput {
                 dt: dt.as_secs_f32(),
@@ -446,22 +534,37 @@ impl Game for Demo {
                 speed: 0.0,
             },
         };
+        let spin = match (left, right) {
+            (false, true) => hierarchy::SPIN_SPEED,
+            (true, false) => -hierarchy::SPIN_SPEED,
+            _ => 0.0,
+        };
         let (width, height) = engine.renderer().size();
         let view = self.world_view([width as f32, height as f32]);
 
-        self.world.insert_resource(controls);
-        self.world.insert_resource(WorldBounds(view));
+        self.scene.world_mut().insert_resource(controls);
+        self.scene.world_mut().insert_resource(WorldBounds(view));
+        self.scene
+            .world_mut()
+            .insert_resource(hierarchy::Spin(spin));
+        // The moon is removed through the scene's deferred queue, so the
+        // despawn is applied at the next update's flush point rather than
+        // mid-step.
+        if despawn_moon && let Some(bodies) = self.hierarchy {
+            log::info!("F pressed; despawning the moon");
+            self.scene.despawn_later(bodies.moon());
+        }
 
         let before = self
             .player
-            .and_then(|entity| self.world.get::<Position>(entity))
-            .map(|position| position.0);
-        self.schedule.run(&mut self.world, dt);
+            .and_then(|entity| self.scene.world().get::<Transform2d>(entity))
+            .map(|transform| transform.translation);
+        self.scene.update(dt);
         self.fixed_steps += 1;
         let after = self
             .player
-            .and_then(|entity| self.world.get::<Position>(entity))
-            .map(|position| position.0);
+            .and_then(|entity| self.scene.world().get::<Transform2d>(entity))
+            .map(|transform| transform.translation);
         if before != after {
             self.moved_steps += 1;
         }
@@ -546,8 +649,8 @@ impl Game for Demo {
         // where the simulation ended up.
         let position = self
             .player
-            .and_then(|entity| self.world.get::<Position>(entity))
-            .map_or([0.0, 0.0], |position| position.0);
+            .and_then(|entity| self.scene.world().get::<Transform2d>(entity))
+            .map_or([0.0, 0.0], |transform| transform.translation);
         log::info!(
             "demo finished: presented {} of {} frames; square at [{:.0}, {:.0}]",
             self.presented,
@@ -557,7 +660,7 @@ impl Game for Demo {
         );
         log::info!(
             "ecs: {} entities, {} fixed steps, {} moved steps",
-            self.world.entity_count(),
+            self.scene.entity_count(),
             self.fixed_steps,
             self.moved_steps,
         );

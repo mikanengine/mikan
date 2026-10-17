@@ -98,6 +98,9 @@ jobs:
       - name: Verify Luau gameplay scripting end to end
         run: xvfb-run -a bash scripts/verify_script.sh
 
+      - name: Verify the scene hierarchy end to end
+        run: xvfb-run -a bash scripts/verify_scene.sh
+
       - name: Verify the showcase scene end to end
         run: xvfb-run -a bash scripts/verify_showcase.sh
 

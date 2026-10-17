@@ -83,7 +83,7 @@ Open questions this record answers:
 
 ## Decision
 
-1. **New crate `crates/mikan-script`** — safe Rust only (the workspace's one
+1. **New crate `crates/script`** — safe Rust only (the workspace's one
    `unsafe` crate remains `mikan-collision-sys`). It exposes:
    - `ScriptEngine::from_file(path)` and `ScriptEngine::from_source(name,
      source)`;

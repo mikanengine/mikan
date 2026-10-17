@@ -10,8 +10,9 @@ How to build, test, run, and verify Mikan on your machine.
   components (rustfmt, clippy) are pinned in `rust-toolchain.toml`; rustup
   installs them automatically on the first `cargo` invocation in this repository.
 - **A C compiler and a C++ compiler.** The collision kernel is C99
-  (`crates/mikan-collision-sys`) and the vendored Luau VM is C++
-  (`crates/mikan-script`), both compiled as part of `cargo build`. On Debian
+  (`crates/collision-sys`), the scene module has a C compose kernel and a C++
+  scene graph (`crates/scene-sys`), and the vendored Luau VM is C++
+  (`crates/script`) — all compiled as part of `cargo build`. On Debian
   and Ubuntu, `sudo apt-get install -y build-essential` (or `gcc g++`)
   covers it; on macOS, the Xcode Command Line Tools; on Windows, the MSVC
   Build Tools that a normal Rust install already uses.
@@ -63,8 +64,9 @@ cargo run -p demo2d -- --help          # command-line reference
 ```
 
 Demo controls: `WASD` or arrow keys move the square, `Escape` quits, and closing
-the window quits. The demo exits with a non-zero status and a readable message if
-initialization or rendering fails.
+the window quits. In the `hierarchy` scene, `A`/`D` spin the sun (the planets
+and moon follow rigidly) and `F` despawns the moon. The demo exits with a
+non-zero status and a readable message if initialization or rendering fails.
 
 The demo is an application of the `mikan` facade crate (`crates/mikan`): it
 implements `mikan::Game` and depends on no other engine crate. The facade
@@ -83,13 +85,19 @@ python3 scripts/generate_assets.py          # rewrite games/demo2d/assets
 python3 scripts/generate_assets.py --check  # fail if the committed files differ
 ```
 
-Three scenes share the loaded assets:
+Four scenes share the loaded assets:
 
 ```bash
 cargo run -p demo2d --release -- --scene classic    # default: drive the square
+cargo run -p demo2d --release -- --scene hierarchy  # spin a sun; its planets and moon orbit it
 cargo run -p demo2d --release -- --scene showcase   # one feature per fixed position
 cargo run -p demo2d --release -- --scene stress --sprites 10000 --no-vsync --stats
 ```
+
+In the `hierarchy` scene the sun, three planets, and a moon are entities linked
+by the scene's transform hierarchy (the guide is [`scene.md`](scene.md)): `A`/`D`
+spin the sun and the planets orbit rigidly, and `F` despawns the moon through the
+deferred queue.
 
 and the camera options are:
 
@@ -140,9 +148,9 @@ Or run all of them, plus the headless runtime checks, with one command:
 ```
 
 The script also runs the generator check and the headless smoke test, capture,
-input, camera, ecs, collision, scripting, showcase, stress, pixel-perfect, and
-asset verification below when `xvfb-run` is available, and skips the
-display-dependent ones with a notice when it is not.
+input, camera, ecs, collision, scripting, scene, showcase, stress,
+pixel-perfect, and asset verification below when `xvfb-run` is available, and
+skips the display-dependent ones with a notice when it is not.
 
 Logging is controlled with the standard `RUST_LOG` environment variable:
 
@@ -310,6 +318,24 @@ a non-finite return must each be logged exactly once, move nothing, and leave
 the game running. The guide is [`scripting.md`](scripting.md); the decision
 record is ADR 0011.
 
+### Verifying the scene hierarchy
+
+```bash
+xvfb-run -a bash scripts/verify_scene.sh
+```
+
+`--scene hierarchy` is a sun, three planets, and a moon linked as entities by
+`mikan-scene`; the check proves the hierarchy propagates and that deferred
+despawn works, entirely from the rendered frame. With no input, the sun must be
+warm at `[480, 300]`, the first planet blue at `[640, 300]`, and the moon a
+yellow star at `[720, 300]` (so the local-translation chain composed correctly).
+Holding `D` spins the sun, and the star's centroid must stay exactly one orbit
+radius (240 px) from the sun while its angle changes by more than 5° — a
+rigid-rotation signature that a broken scale/rotate/translate order cannot
+produce. Pressing `F` must remove the star pixels while the sun and planets
+remain, so the moon alone was despawned. The layer guide is
+[`scene.md`](scene.md); the decision record is ADR 0012.
+
 ### Verifying the showcase scene
 
 `--scene showcase` draws eight sprites at fixed positions, one per sprite
@@ -384,6 +410,25 @@ claimed; see `docs/STATUS.md` for the numbers and ADR 0010 for why the kernel
 exists anyway. The Rust reference doubles as the test oracle, so this
 benchmark compares two implementations that provably agree.
 
+### Benchmarking the scene module
+
+```bash
+bash scripts/bench_scene.sh                 # 100,000-node chain, default repetitions
+NODES=20000 bash scripts/bench_scene.sh     # a different hierarchy size
+```
+
+Runs the same hierarchy and local transforms through the native scene graph
+(`mikan-scene-sys`, the C++ graph driving the C compose kernel) and through a
+Rust reference fold (`mikan_scene::reference`) in release, records each run's
+ns/node under `artifacts/bench/`, and prints both. The recorded result is that
+**the native graph is substantially slower** — it carries real graph bookkeeping
+(`unordered_map` index and parent lookups, per-call traversal buffers) that the
+reference, with a precomputed parent array, gets for free. The driver was the
+architecture directive, not performance, and no speedup is claimed; see
+`docs/STATUS.md` for the numbers and ADR 0012 for why the module exists anyway.
+The Rust reference doubles as the test oracle, cross-checked bit for bit, so
+this benchmark compares two implementations that provably agree.
+
 ### Benchmarking the sprite pipeline
 
 ```bash
@@ -426,10 +471,11 @@ it applied to this one.
 - Every public item has a doc comment; `missing_docs` is a warning and CI treats
   warnings as errors.
 - `unsafe_code` is forbidden workspace-wide. This is a deliberate constraint:
-  if a change needs `unsafe`, it needs an accepted ADR first. The single
-  exception is `crates/mikan-collision-sys`, the C ABI boundary recorded in
-  ADR 0010 and in that crate's root; its safe wrapper and every consumer
-  contain none.
+  if a change needs `unsafe`, it needs an accepted ADR first. The exceptions are
+  `crates/collision-sys` (the C ABI boundary recorded in ADR 0010) and
+  `crates/scene-sys` (the C compose kernel and C++ scene graph recorded in
+  ADR 0012), each with the override and its reason in the crate root; their safe
+  wrappers and every consumer contain none.
 - Tests live next to the code they test (`#[cfg(test)] mod tests`). Pure logic —
   timing, input edges, image encoding, sprite instance layout, UV and camera
   math — is unit-tested without a GPU or a window.

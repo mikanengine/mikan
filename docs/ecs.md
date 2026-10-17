@@ -1,6 +1,6 @@
 # The ECS-lite guide
 
-`crates/mikan-ecs` is a deliberately small entity-component-system layer: dense,
+`crates/ecs` is a deliberately small entity-component-system layer: dense,
 typed component storage, generational entity handles, per-world resources, and a
 schedule that runs named systems in registration order. It is CPU-only and
 depends on nothing in the workspace, so gameplay data can be tested without a
@@ -226,7 +226,7 @@ schedule.names();                  // ["snapshot", "input", "movement", "collide
 Given the same binary, the same world, and the same `dt` sequence, a schedule
 performs the same work in the same order — iteration and system order are both
 specified, and no hash-map order is observable through the public API.
-`crates/mikan-ecs/tests/determinism.rs` exercises this: repeating a step
+`crates/ecs/tests/determinism.rs` exercises this: repeating a step
 sequence reproduces position and interpolation state **bit for bit**, and
 despawn/reuse interleavings do not disturb the surviving order.
 

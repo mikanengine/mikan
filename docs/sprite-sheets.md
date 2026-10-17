@@ -3,7 +3,7 @@
 A sprite sheet is one texture plus named rectangles into it. Mikan reads a
 documented subset of the JSON that Aseprite (and tools imitating it) export, so
 sheets can come from an existing art pipeline without a custom exporter. The
-parser lives in `crates/mikan-assets/src/sheet.rs`; this document is the
+parser lives in `crates/assets/src/sheet.rs`; this document is the
 contract.
 
 ## Format

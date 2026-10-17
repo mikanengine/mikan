@@ -3,7 +3,7 @@
 # Measures the C narrow-phase kernel against the Rust reference
 # implementation honestly: the same pair set runs through both, in release
 # mode, with warm-ups and repeated runs, and the tool prints nanoseconds per
-# pair and the ratio. See crates/mikan-collision/examples/bench.rs for the
+# pair and the ratio. See crates/collision/examples/bench.rs for the
 # generator and profiling discipline, and docs/collision.md for how to read
 # the numbers.
 #

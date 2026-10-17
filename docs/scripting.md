@@ -9,7 +9,7 @@ Luau VM) is stated there and in `docs/ffi.md`.
 
 ## The crate
 
-`crates/mikan-script` is safe Rust (no `unsafe`). It builds Luau from the
+`crates/script` is safe Rust (no `unsafe`). It builds Luau from the
 sources vendored through `mlua`'s `luau` and `vendored` features, so no system
 Lua installation is required — but a **C++ compiler is** (the Luau VM is C++
 sources compiled by `mlua-sys`'s build script).

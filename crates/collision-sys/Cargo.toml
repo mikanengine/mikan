@@ -11,8 +11,9 @@ keywords.workspace = true
 categories.workspace = true
 
 [lints]
-# The workspace forbids `unsafe_code` crate-wide; this is the one crate allowed
-# to bridge into C (the reason is recorded in the crate root, per docs/ffi.md).
+# The workspace forbids `unsafe_code` crate-wide; this is one of the crates
+# allowed to bridge into C (the reason is recorded in the crate root, per
+# docs/ffi.md).
 # Cargo cannot inherit the workspace lints and override one in the same table,
 # so the three workspace lints are repeated here with `unsafe_code = "allow"`;
 # everything else matches the workspace table exactly.

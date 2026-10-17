@@ -13,16 +13,20 @@ keywords = ["game-engine", "gamedev", "wgpu", "winit", "2d"]
 categories = ["game-engines", "graphics", "game-development"]
 
 [workspace.dependencies]
-# Engine crates
+# Engine crates. Crate directories use the plain subsystem name
+# (`crates/core`, `crates/render`, ...); the published package keeps the
+# `mikan-` prefix.
 mikan = { path = "crates/mikan", version = "0.1.0" }
-mikan-assets = { path = "crates/mikan-assets", version = "0.1.0" }
-mikan-collision = { path = "crates/mikan-collision", version = "0.1.0" }
-mikan-collision-sys = { path = "crates/mikan-collision-sys", version = "0.1.0" }
-mikan-core = { path = "crates/mikan-core", version = "0.1.0" }
-mikan-ecs = { path = "crates/mikan-ecs", version = "0.1.0" }
-mikan-platform = { path = "crates/mikan-platform", version = "0.1.0" }
-mikan-render = { path = "crates/mikan-render", version = "0.1.0" }
-mikan-script = { path = "crates/mikan-script", version = "0.1.0" }
+mikan-assets = { path = "crates/assets", version = "0.1.0" }
+mikan-collision = { path = "crates/collision", version = "0.1.0" }
+mikan-collision-sys = { path = "crates/collision-sys", version = "0.1.0" }
+mikan-core = { path = "crates/core", version = "0.1.0" }
+mikan-ecs = { path = "crates/ecs", version = "0.1.0" }
+mikan-platform = { path = "crates/platform", version = "0.1.0" }
+mikan-render = { path = "crates/render", version = "0.1.0" }
+mikan-scene = { path = "crates/scene", version = "0.1.0" }
+mikan-scene-sys = { path = "crates/scene-sys", version = "0.1.0" }
+mikan-script = { path = "crates/script", version = "0.1.0" }
 
 # Upstream dependencies. Versions are the oldest release of the current
 # compatible series that has been verified to build with the pinned toolchain.

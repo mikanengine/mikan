@@ -17,6 +17,7 @@ the ones that are inconvenient.
 | [0009](0009-ecs-lite.md) | ECS-lite: generational entities, sparse-set components, and scheduled systems; no native module in this milestone | Accepted |
 | [0010](0010-2d-collision-and-a-c-kernel.md) | 2D collision detection and resolution, with the narrow-phase kernel in C | Accepted |
 | [0011](0011-luau-gameplay-scripting.md) | Gameplay scripting with embedded Luau (vendored C++ VM) | Accepted |
+| [0012](0012-scene-and-entity-system.md) | Scene and entity transform hierarchy, with a C compose kernel and a hand-written C++ scene graph | Accepted |
 
 A decision is superseded by adding a new ADR that states what it replaces; the
 old record is not rewritten.

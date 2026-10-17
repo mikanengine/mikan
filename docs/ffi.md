@@ -5,32 +5,45 @@ code is allowed to enter the repository, how it must be structured, and what
 "done" means for such a module. It also states, unambiguously, what native code
 exists today.
 
-## Current status: two native modules
+## Current status: three native modules
 
-Native code entered the repository in Phase 5, by explicit owner-directed
-architecture decision (ADR 0010, ADR 0011) rather than silently:
+Native code entered the repository by explicit owner-directed architecture
+decision (ADR 0010, ADR 0011, ADR 0012) rather than silently:
 
-1. **`crates/mikan-collision-sys` (C99)** — the collision narrow-phase kernel:
+1. **`crates/collision-sys` (C99)** — the collision narrow-phase kernel:
    one batch function, `mikan_contacts`, over plain `#[repr(C)]` data, with a
-   safe wrapper (`crates/mikan-collision`), warnings-as-errors on its own
+   safe wrapper (`crates/collision`), warnings-as-errors on its own
    sources, cross-check tests against an independent Rust implementation, and
    a recorded Valgrind run (`docs/STATUS.md`). It was **not** adopted on
    performance grounds: it measures at parity with the Rust reference and no
    speedup is claimed. ADR 0010 supersedes ADR 0004 *for this module only*.
-2. **The vendored Luau VM (C++)** — `mlua`'s `luau` + `vendored` features
+2. **`crates/scene-sys` (C and C++)** — the scene module: a C compose kernel
+   (`mikan_transform2d_compose`, one batch-shaped function over a seven-`f32`
+   `#[repr(C)]` struct) next to a hand-written C++ scene graph
+   (`mikan_scene_graph`, one opaque handle with `extern "C"` entry points and
+   status codes), with a safe wrapper (`crates/scene`), warnings-as-errors and
+   `-fno-exceptions -fno-rtti` on its own sources, cross-check tests against an
+   independent Rust compose, and a recorded Valgrind run (`docs/STATUS.md`).
+   Like collision it was **not** adopted on performance grounds: the native
+   graph measures *slower* than a Rust array fold because it carries real graph
+   bookkeeping, and no speedup is claimed. It is the first module with
+   hand-written C++ (not just a vendored C++ library). ADR 0012 supersedes
+   ADR 0004 *for this module only*.
+3. **The vendored Luau VM (C++)** — `mlua`'s `luau` + `vendored` features
    compile the pinned upstream Luau sources with the system C++ compiler when
    `mikan-script` is built (ADR 0011). It is third-party code consumed
-   through `mlua`; Mikan writes no C++ glue, and the rules below apply to
-   Mikan's own sources, not to upstream code compiled by its own build
+   through `mlua`; Mikan writes no C++ glue for it, and the rules below apply
+   to Mikan's own sources, not to upstream code compiled by its own build
    system.
 
-Consequently, **a C compiler and a C++ compiler are now build prerequisites**
-on every platform, documented in `docs/DEVELOPMENT.md`. The workspace still
-forbids `unsafe_code` crate-wide; the single exception is
-`mikan-collision-sys`, whose crate root records the override and its reason.
+Consequently, **a C compiler and a C++ compiler are build prerequisites** on
+every platform, documented in `docs/DEVELOPMENT.md`. The workspace still
+forbids `unsafe_code` crate-wide; the exceptions are `mikan-collision-sys` and
+`mikan-scene-sys`, whose crate roots record the overrides and their reasons.
 
-The C first-party surface is exactly one function; the C++ surface is the
-vendored VM. Nothing else links native code.
+The first-party C surface is two batch kernels (the collision narrow phase and
+the transform compose); the hand-written C++ surface is the scene graph; and the
+third-party C++ surface is the vendored Luau VM. Nothing else links native code.
 
 ## Why C and C++ were deferred, and what changed
 
@@ -54,11 +67,12 @@ What changed in Phase 5: the project owner directed that Mikan's stated
 architecture — Rust + C++ forming the engine core, C as the low-level
 foundation — is a requirement, not a long-term intention. ADR 0010 (the C
 collision kernel) and ADR 0011 (the vendored C++ Luau VM) record how that
-directive is honored. The policy below remains in force for every module
-proposed **on performance grounds**; a module introduced by an architecture
-decision instead must say so in its own ADR, report its measurements as
-measured (parity is a legitimate result, stated as parity), and meet every
-other criterion here unchanged.
+directive is honored; the scene milestone added ADR 0012 (a C transform kernel
+and Mikan's own C++ scene graph). The policy below remains in force for every
+module proposed **on performance grounds**; a module introduced by an
+architecture decision instead must say so in its own ADR, report its
+measurements as measured (parity — or being slower — is a legitimate result,
+stated as such), and meet every other criterion here unchanged.
 
 ## Criteria for introducing a native module
 
@@ -79,7 +93,7 @@ A native module is considered only when **all** of the following hold:
    the honest measured result is, and that no speedup is claimed — ADR 0010 is
    the existing example.
 4. **It is isolated.** The module lives in its own crate (for example
-   `crates/mikan-<name>-sys`) that nothing imports directly except a safe wrapper.
+   `crates/<name>-sys`) that nothing imports directly except a safe wrapper.
 5. **It is tested on its own.** The module has tests exercising the C/C++ code
    through the wrapper, including error paths and boundary conditions, and those
    tests run in CI on every supported platform.
@@ -119,10 +133,15 @@ A native module is considered only when **all** of the following hold:
 - **C++** requires a specific reason: an existing library that must be consumed
   on its own terms, or a workload where C++ abstractions measurably matter. Even
   then, only `extern "C"` entry points may cross the boundary; the C++ layer must
-  not own control flow that Rust depends on. The vendored Luau VM is exactly the
+  not own control flow that Rust depends on. The vendored Luau VM is the
   "existing library consumed on its own terms" case: Mikan does not write the
   C++, it compiles pinned upstream sources through `mlua` and never links
-  against an ambient Lua installation.
+  against an ambient Lua installation. The scene graph in
+  `crates/scene-sys/src/scene_graph.cpp` is the other case: a dynamic
+  parent/children topology is a mutually-referential data structure whose
+  invariants (forest, no cycles, stable order) are natural in C++ and awkward
+  to express across a boundary, so it is written in C++ behind one opaque
+  handle — while the arithmetic it calls is C.
 - **Both** must build with warnings-as-errors for the module's own sources and
   must not require exceptions or RTTI for C++. Vendored third-party sources are
   compiled by their own build system under their own flags; the rule binds the
@@ -153,7 +172,9 @@ A native module is "done" only when the following are all true:
   the command and result recorded in `docs/STATUS.md`;
 - `docs/ARCHITECTURE.md` describes where the module sits in the dependency graph.
 
-A module that cannot show all of this does not belong in this repository. The
-first first-party module has walked the whole path and its records can be used
-as the worked example: design in `docs/collision.md`, decision in ADR 0010,
-benchmark and Valgrind results in `docs/STATUS.md`.
+A module that cannot show all of this does not belong in this repository. Two
+first-party modules have walked the whole path and their records are the worked
+examples: collision — design in `docs/collision.md`, decision in ADR 0010,
+benchmark and Valgrind results in `docs/STATUS.md` — and the scene module —
+design in `docs/scene.md`, decision in ADR 0012, benchmark and Valgrind results
+in `docs/STATUS.md`.

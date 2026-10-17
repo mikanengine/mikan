@@ -38,6 +38,36 @@ impl Entity {
     pub const fn generation(self) -> u32 {
         self.generation
     }
+
+    /// Packs the handle into one `u64`: the slot index occupies the high 32
+    /// bits, the generation the low 32.
+    ///
+    /// This is the form non-ECS storage uses to key entities — the scene
+    /// graph stores its nodes this way — because the full handle, generation
+    /// included, is what keeps a stale reference from matching a reused slot.
+    #[must_use]
+    pub const fn to_bits(self) -> u64 {
+        ((self.index as u64) << 32) | self.generation as u64
+    }
+
+    /// Unpacks a handle from [`Entity::to_bits`].
+    ///
+    /// Returns `None` when the generation is zero, which no issued handle has:
+    /// such bits can only be hand-built, and refusing them preserves "every
+    /// `Entity` is a handle an allocator could have issued". The result is a
+    /// handle, not a liveness promise — an entity can be despawned after its
+    /// bits are taken.
+    #[must_use]
+    pub const fn from_bits(bits: u64) -> Option<Self> {
+        let generation = bits as u32;
+        if generation == 0 {
+            return None;
+        }
+        Some(Self {
+            index: (bits >> 32) as u32,
+            generation,
+        })
+    }
 }
 
 impl fmt::Display for Entity {
@@ -212,5 +242,30 @@ mod tests {
             index: 99,
             generation: 1,
         }));
+    }
+
+    #[test]
+    fn bits_round_trip_and_keep_generations_distinct() {
+        let mut entities = Entities::default();
+        let first = entities.spawn();
+        entities.despawn(first);
+        let second = entities.spawn();
+        assert_eq!(Entity::from_bits(first.to_bits()), Some(first));
+        assert_eq!(Entity::from_bits(second.to_bits()), Some(second));
+        assert_ne!(
+            first.to_bits(),
+            second.to_bits(),
+            "a reused slot packs a different generation"
+        );
+    }
+
+    #[test]
+    fn bits_refuse_generation_zero() {
+        assert_eq!(Entity::from_bits(0), None);
+        assert_eq!(Entity::from_bits(1_u64 << 32), None, "index only, gen 0");
+        assert_eq!(
+            Entity::from_bits((7_u64 << 32) | 1).map(|e| (e.index(), e.generation())),
+            Some((7, 1))
+        );
     }
 }

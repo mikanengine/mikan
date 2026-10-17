@@ -8,7 +8,7 @@
 //!   deduplicated candidate [`Pair`]s, deterministically (its output is
 //!   sorted and independent of hash-map order).
 //! - [`contacts`] — one batch call into the C kernel
-//!   (`crates/mikan-collision-sys`), writing one [`Contact`] per pair.
+//!   (`crates/collision-sys`), writing one [`Contact`] per pair.
 //! - [`reference`] — the Rust implementation of the same contact math,
 //!   kept as the test oracle and the benchmark baseline. The test suite
 //!   cross-checks it against the C kernel on fixed and randomized cases.

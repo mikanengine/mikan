@@ -1,0 +1,18 @@
+[package]
+name = "mikan-scene"
+description = "Mikan's scene system: transforms and world hierarchy (a C++ scene graph behind a safe wrapper), entity scenes, and a scene manager, all driven through the ECS."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+mikan-ecs.workspace = true
+mikan-scene-sys.workspace = true
+thiserror.workspace = true

@@ -8,9 +8,10 @@
 //! The pieces:
 //!
 //! - [`CLASSIC_BLOCKS`] — the layout, shared by [`spawn_blocks`] and the
-//!   renderer (`crate::scene::classic`), so what is drawn is what collides.
-//! - [`spawn_blocks`] — one [`Position`] + [`Collider`] entity per block. No
-//!   [`Motion`], which is exactly what makes them static.
+//!   renderer (each block's [`SpriteRenderer`]), so what is drawn is what
+//!   collides.
+//! - [`spawn_blocks`] — one `Transform2d` + [`Collider`] + [`SpriteRenderer`]
+//!   entity per block. No [`Motion`], which is exactly what makes them static.
 //! - [`collide_system`] — the schedule's fourth step: broad phase, narrow
 //!   phase, then positional resolution, in that order.
 //!
@@ -24,15 +25,25 @@
 
 use std::time::Duration;
 
-use mikan::{Aabb, Broadphase, Contact, DeadEntity, Entity, Pair, World, contacts};
+use mikan::{
+    Aabb, Broadphase, Color, Contact, DeadEntity, Entity, Pair, Transform2d, World, contacts,
+};
 
-use crate::player::{Collider, Motion, Position};
+use crate::player::{Collider, Motion};
+use crate::renderable::SpriteRenderer;
 
 /// Size of one broad-phase grid cell, in pixels.
 ///
 /// Larger than the widest collider (the 140-pixel pillar), so a block spans
 /// at most four cells and candidate pairs stay close to real pairs.
 pub const GRID_CELL: f32 = 160.0;
+
+/// Fill color of the classic scene's collision blocks.
+///
+/// Deliberately cool and dark: the camera and pixel-perfect verifications
+/// find the player square by "warm" pixels (red above green above blue), and
+/// a block must never satisfy that heuristic.
+pub const BLOCK_COLOR: Color = Color::rgb(0.22, 0.32, 0.44);
 
 /// A static block of the classic scene: where it sits and how big it is.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -76,8 +87,9 @@ pub fn spawn_blocks(world: &mut World) -> Result<Vec<Entity>, DeadEntity> {
     let mut entities = Vec::with_capacity(CLASSIC_BLOCKS.len());
     for block in CLASSIC_BLOCKS {
         let entity = world.spawn();
-        world.insert(entity, Position(block.center))?;
+        world.insert(entity, Transform2d::from_translation(block.center))?;
         world.insert(entity, Collider { size: block.size })?;
+        world.insert(entity, SpriteRenderer::solid(block.size, BLOCK_COLOR))?;
         entities.push(entity);
     }
     Ok(entities)
@@ -107,9 +119,9 @@ pub fn collide_system() -> impl FnMut(&mut World, Duration) {
         // the passes below need it again.
         boxes.clear();
         entities.clear();
-        for (entity, position, collider) in world.iter2::<Position, Collider>() {
+        for (entity, transform, collider) in world.iter2::<Transform2d, Collider>() {
             entities.push(entity);
-            boxes.push(Aabb::from_center_size(position.0, collider.size));
+            boxes.push(Aabb::from_center_size(transform.translation, collider.size));
         }
         if entities.len() < 2 {
             return;
@@ -159,9 +171,9 @@ pub fn collide_system() -> impl FnMut(&mut World, Duration) {
             if offset[0] == 0.0 && offset[1] == 0.0 {
                 continue;
             }
-            if let Some(position) = world.get_mut::<Position>(*entity) {
-                position.0[0] += offset[0];
-                position.0[1] += offset[1];
+            if let Some(transform) = world.get_mut::<Transform2d>(*entity) {
+                transform.translation[0] += offset[0];
+                transform.translation[1] += offset[1];
             }
         }
     }
@@ -192,6 +204,13 @@ mod tests {
         Duration::from_secs_f64(1.0 / 120.0)
     }
 
+    fn translation(world: &World, entity: Entity) -> [f32; 2] {
+        world
+            .get::<Transform2d>(entity)
+            .expect("a transform")
+            .translation
+    }
+
     fn fixture() -> (World, Entity, Vec<Entity>) {
         let mut world = World::new();
         world.insert_resource(WorldBounds([960.0, 600.0]));
@@ -206,13 +225,14 @@ mod tests {
     }
 
     #[test]
-    fn blocks_spawn_as_static_position_collider_entities() {
+    fn blocks_spawn_as_static_transform_collider_entities() {
         let mut world = World::new();
         let entities = spawn_blocks(&mut world).expect("a fresh entity is alive");
         assert_eq!(entities.len(), CLASSIC_BLOCKS.len());
         for (entity, block) in entities.iter().zip(CLASSIC_BLOCKS) {
-            assert_eq!(world.get::<Position>(*entity).unwrap().0, block.center);
+            assert_eq!(translation(&world, *entity), block.center);
             assert_eq!(world.get::<Collider>(*entity).unwrap().size, block.size);
+            assert!(world.has::<SpriteRenderer>(*entity), "blocks are drawable");
             assert!(!world.has::<Motion>(*entity), "blocks never move");
             assert!(!world.has::<Player>(*entity), "blocks are not the player");
         }
@@ -240,9 +260,9 @@ mod tests {
         let mut collide = collide_system();
         collide(&mut world, step_duration());
 
-        assert_eq!(world.get::<Position>(player).unwrap().0, [480.0, 300.0]);
+        assert_eq!(translation(&world, player), [480.0, 300.0]);
         for (entity, block) in blocks.iter().zip(CLASSIC_BLOCKS) {
-            assert_eq!(world.get::<Position>(*entity).unwrap().0, block.center);
+            assert_eq!(translation(&world, *entity), block.center);
         }
     }
 
@@ -259,12 +279,12 @@ mod tests {
         collide(&mut world, step_duration());
 
         assert_eq!(
-            world.get::<Position>(player).unwrap().0,
+            translation(&world, player),
             [700.0, 342.0],
             "pushed out along the shallow axis, to the pillar's top edge"
         );
         assert_eq!(
-            world.get::<Position>(blocks[0]).unwrap().0,
+            translation(&world, blocks[0]),
             CLASSIC_BLOCKS[0].center,
             "the block absorbs nothing"
         );
@@ -282,8 +302,8 @@ mod tests {
         collide(&mut world, step_duration());
 
         // 66 px of x overlap split in half: 400 - 33 and 430 + 33.
-        assert_eq!(world.get::<Position>(first).unwrap().0, [367.0, 300.0]);
-        assert_eq!(world.get::<Position>(second).unwrap().0, [463.0, 300.0]);
+        assert_eq!(translation(&world, first), [367.0, 300.0]);
+        assert_eq!(translation(&world, second), [463.0, 300.0]);
     }
 
     #[test]
@@ -302,7 +322,7 @@ mod tests {
             schedule.run(&mut world, step_duration());
         }
 
-        let position = world.get::<Position>(player).unwrap().0;
+        let position = translation(&world, player);
         let pillar = CLASSIC_BLOCKS[0];
         let face = pillar.center[0] - pillar.size[0] * 0.5 - 96.0 * 0.5;
         assert!(
@@ -312,7 +332,7 @@ mod tests {
         );
         assert_eq!(position[1], 552.0, "the floor clamp holds the player");
         assert_eq!(
-            world.get::<Position>(blocks[0]).unwrap().0,
+            translation(&world, blocks[0]),
             pillar.center,
             "the pillar never moves"
         );

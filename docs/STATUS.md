@@ -1,13 +1,16 @@
 # Mikan status
 
-- **Date:** 2026-10-16
-- **Revision:** `main` @ `0f74e34` ("docs: document the ECS-lite milestone").
-  The Phase 3 change set is committed locally as eight commits
-  (`991c17e`..`5c95578`), Phase 4 (ECS-lite) as five (`813cbc2`..`0f74e34`), and
-  the Phase 5 (collision + Luau scripting) change set is **uncommitted in the
-  working tree**. **Pushes and CI runs still require explicit authorization**,
-  so the "Verification: CI" section below records the last pushed state, and
-  every claim in this document comes from local runs on this machine.
+- **Date:** 2026-10-17
+- **Revision:** `main` @ `5f63579` ("Implement gameplay scripting with Luau and
+  integrate collision system"). The Phase 3 change set is committed locally as
+  eight commits (`991c17e`..`5c95578`), Phase 4 (ECS-lite) as five
+  (`813cbc2`..`0f74e34`), and Phase 5 (collision + Luau scripting) as
+  `5f63579`. The Phase 7 (scene and entity system) change set is **uncommitted
+  in the working tree** on top of `5f63579`, together with the crate-directory
+  renames (`crates/mikan-*` → `crates/*`). **Pushes and CI runs still require
+  explicit authorization**, so the "Verification: CI" section below records the
+  last pushed state, and every claim in this document comes from local runs on
+  this machine.
 - **Purpose:** state precisely what is implemented, how each claim was verified,
   and what is known to be missing. Verification levels follow ADR 0005: nothing
   is called *verified* unless it was run.
@@ -138,7 +141,7 @@ Gameplay state moves into a small, dependency-free ECS:
 
 The roadmap's Phase 5 milestone, with the narrow-phase kernel in C:
 
-- **`mikan-collision-sys`**, the one crate allowed to use `unsafe`: a C99
+- **`mikan-collision-sys`**, one of the two crates allowed to use `unsafe`: a C99
   narrow-phase kernel (`src/mikan_contacts.h`, `src/contacts.c`) compiled by a
   `build.rs` with warnings-as-errors, `#[repr(C)]` mirror types, and the raw
   `extern "C"` declaration (public with `# Safety` docs so tests can exercise
@@ -221,20 +224,75 @@ amendment to the roadmap, not a silent substitution:
   and a non-finite return are each logged exactly once, move nothing, and leave
   the game running. Wired into `scripts/verify.sh` and the CI smoke job.
 
+## Milestone: scene and entity transform hierarchy — complete
+
+The layer above the ECS: where each entity is, what its parent is, what a scene
+is, and how deferred despawn works. It is the first module with hand-written C++
+of Mikan's own, beside a C numeric kernel, with the ECS, scene policy, and
+manager kept in Rust (ADR 0012):
+
+- **`mikan-scene-sys`**, one of two crates allowed to use `unsafe`: a C compose
+  kernel (`src/transform.c`, `mikan_transform2d_compose`, one batch-shaped
+  function over a seven-`f32` `#[repr(C)]` struct) and a hand-written C++ scene
+  graph (`src/scene_graph.cpp`, one opaque `mikan_scene_graph` handle with
+  `extern "C"` entry points and status codes), compiled by a `build.rs` with
+  warnings-as-errors and `-fno-exceptions -fno-rtti`. The graph stores topology
+  and opaque `u64` identity only; `propagate` walks parents-first and delegates
+  every arithmetic operation to the C kernel. No panics cross the boundary; the
+  lint override and its reason are recorded in the crate root.
+- **`mikan-scene`**, the safe face (no `unsafe`): `Transform2d` and
+  `GlobalTransform2d` (rotation is the source of truth; the composed `(cos, sin)`
+  pair is cached so the kernel never computes trigonometry), `Hierarchy` (a
+  forest over entity handles: at most one parent, node `0` is the "no parent"
+  sentinel, cycles are rejected without mutating the graph, removing a node
+  re-roots its children, attachment and insertion order are stable), the
+  `DespawnQueue`, `Scene` (one `World`, one `Schedule`, and the fixed update
+  order: systems → `flush_despawns` → `propagate_transforms`), `SceneManager`
+  (generational `SceneId`s, exactly one active scene per update), and
+  `reference`, the independent Rust compose kept as the test oracle.
+- **Cross-checks are tests, not prose**: the C kernel and the Rust reference are
+  compared bit for bit (through `to_bits`, which distinguishes `-0.0`), including
+  a large randomized hierarchy; `mikan-scene`'s propagation is checked against a
+  reference fold as well.
+- **The demo integrates it**: `--scene hierarchy` builds a sun (root), three
+  planets (children of the sun), and a moon (child of the first planet) as
+  entities with `Transform2d` components and the shared `SpriteRenderer`; `A`/`D`
+  spin the sun so the planets orbit rigidly, and `F` despawns the moon through
+  the deferred queue. The classic and hierarchy scenes draw through one
+  `renderable::collect` walk over `(SpriteRenderer, GlobalTransform2d)`.
+- **The measurement is honest**: `scripts/bench_scene.sh` runs the same
+  hierarchy through the native graph and a Rust reference fold in release; the
+  recorded result is that **the native graph is materially slower** (about
+  fifteen times the per-node cost at 100,000 nodes) because it carries real graph
+  bookkeeping, and no speedup is claimed. A Valgrind run of the benchmark binary
+  reports **0 errors and 0 bytes lost**.
+- **The decision is explicit**: the module exists because the low-level numeric
+  kernel is C's assigned home and a dynamic graph is C++'s, not because of a
+  profiled bottleneck; ADR 0012 records that, reports the slower-than-Rust
+  result, and supersedes ADR 0004 *for this module only*.
+- **End-to-end verification**: `scripts/verify_scene.sh` requires the startup
+  layout (warm sun at `[480, 300]`, blue planet at `[640, 300]`, yellow star at
+  `[720, 300]`), holds `D` and requires the moon's centroid to stay one orbit
+  radius (240 px) from the sun while its angle changes by more than 5°, and
+  presses `F` and requires the star pixels to disappear while the sun and
+  planets remain. Wired into `scripts/verify.sh` and the CI smoke job.
+
 ## What is implemented
 
 | Area | What exists | Coverage |
 | --- | --- | --- |
 | `mikan-core` | `EngineConfig` + validation, `Color`, `Time` (clamped delta, zero first tick), `FixedTimestep` (bounded catch-up, interpolation alpha), `FrameOutcome`, `Camera2d` (position, zoom, `world_to_screen`, sanitizing `effective_zoom`, `pixel_space`, `pixel_perfect` integer zoom + snap, `pixel_perfect_scale`, `snap_to_physical_pixels`), `UvRect` (normalized region, collapsible half-texel `inset`), one-shot `init_logging` | 32 unit tests |
 | `mikan-assets` | `Image` (PNG → RGBA8, all color types normalized, `MAX_IMAGE_DIMENSION` + checked allocation, `ImageError`), `SpriteSheet`/`SheetFrame` (Aseprite JSON subset, `meta.image` resolution, duplicate detection via a custom serde visitor, geometry/pivot validation, rotated/trimmed rejection, inset `uv`, `center_for_pivot`), `SheetError` | 40 unit tests, 1 doc test |
-| `mikan-ecs` | `Entity` (generational handle, `Display` `{index}v{generation}`, LIFO slot reuse, stale-handle rejection), `World` (insertion-ordered sparse-set storage per component type, typed resources, `iter`/`iter_mut`/`iter2`/`iter2_mut`, `component_count`, `entity_count`, `Debug`), `Schedule` (named systems once each in registration order, `names`/`len`/`clear`), `DeadEntity` | 40 unit tests, 5 integration tests (determinism), 4 doc tests |
-| `mikan-collision-sys` | the C99 narrow-phase kernel (`mikan_contacts` over plain `#[repr(C)]` data, warnings-as-errors `build.rs`), the raw binding with `# Safety` docs, and a safe batch wrapper with debug assertions on pair indices; the one crate allowed `unsafe` (override and reason recorded in its crate root) | 7 integration tests (kernel semantics, boundary and degenerate cases, index validation) |
+| `mikan-ecs` | `Entity` (generational handle, `Display` `{index}v{generation}`, LIFO slot reuse, stale-handle rejection), `World` (insertion-ordered sparse-set storage per component type, typed resources, `iter`/`iter_mut`/`iter2`/`iter2_mut`, `component_count`, `entity_count`, `Debug`), `Schedule` (named systems once each in registration order, `names`/`len`/`clear`), `DeadEntity` | 42 unit tests, 5 integration tests (determinism), 4 doc tests |
+| `mikan-collision-sys` | the C99 narrow-phase kernel (`mikan_contacts` over plain `#[repr(C)]` data, warnings-as-errors `build.rs`), the raw binding with `# Safety` docs, and a safe batch wrapper with debug assertions on pair indices; one of the two crates allowed `unsafe` (override and reason recorded in its crate root) | 7 integration tests (kernel semantics, boundary and degenerate cases, index validation) |
 | `mikan-collision` | `Aabb`/`Pair`/`Contact` with documented semantics, uniform-grid `Broadphase` (sorted, deduplicated, deterministic output), `contacts`, and `reference` — the Rust oracle and benchmark baseline, cross-checked bit for bit (including a randomized 256-box scene stepped 8 × 20,000 times) | 6 broad-phase integration tests, 3 cross-check integration tests, 2 doc tests |
+| `mikan-scene-sys` | the C compose kernel (`mikan_transform2d_compose` over a seven-`f32` `#[repr(C)]` struct, `-ffp-contract=off`) and the hand-written C++ scene graph (one opaque handle, `extern "C"` entry points, status codes, warnings-as-errors and `-fno-exceptions -fno-rtti` `build.rs`); the second crate allowed `unsafe` (override and reason recorded in its crate root) | 6 unit tests, 8 integration tests (graph semantics, error paths, removal-reroots invariant, propagate ordering, bit-exact compose) |
+| `mikan-scene` | `Transform2d`/`GlobalTransform2d`, `Hierarchy` (forest invariants, re-root on removal), `DespawnQueue`, `Scene` (one world + schedule, ordered update), `SceneManager` (generational ids, one active scene), `propagate_transforms`, and `reference` — the Rust oracle, cross-checked bit for bit | 17 unit tests, 11 integration tests (scene behavior), 4 cross-check integration tests, 4 doc tests |
 | `mikan-script` | `ScriptEngine` (`from_file`/`from_source`, `call_step`, `name`, `used_memory`), `StepInput`/`StepOutput`, and `ScriptError` (`Load`, `Compile`, `MissingFunction`, `Runtime`, `InvalidReturn`, `Vm`) carrying the script name and line; explicit safe library set, Luau `sandbox(true)`, 64 MiB memory limit; vendored Luau through `mlua` 0.11.6 | 18 unit tests |
 | `mikan-platform` | `App` lifecycle trait, `AppContext`, `InputState` (held state, press/release edges, cursor delta, focus release), `winit` runner with occlusion/suspension-aware waiting | 9 unit tests, 1 doc test |
 | `mikan-render` | `wgpu` instance/adapter/device/queue/surface, format/alpha/present-mode selection, explicit handling of every swap chain state, resize (including zero-sized), device-lost reporting, instanced sprite pipeline (flat or textured, per-sprite rotation, tint, alpha, linear/nearest sampling as a batch key), texture upload with declared encoding (`Linear`/`Srgb`, validated), camera view/projection matrix (including pixel-perfect), `FrameStats { sprites, batches, draw_calls }`, RGBA8 capture readback | 27 unit tests, 1 doc test |
-| `mikan` | the `Game` lifecycle over the platform `App` (renderer created before `init`, resizes forwarded before the game sees them, `shutdown` iff `init` ran), the `Engine` handle (`AppContext` + `&Renderer` + `render_frame`), labeled renderer-startup failures, curated re-exports of all seven engine crates (including `mikan_ecs`, `mikan_collision`, and `mikan_script` with their common types) | 3 unit tests, 2 doc tests |
-| `games/demo2d` | built on the `mikan` facade: CLI (`--frames`, `--capture`, `--stats`, `--timeout`, `--scene`, `--sampler`, `--pixel-perfect`, `--assets`, `--size`, `--camera`, `--zoom`, `--no-vsync`, `--sprites`, `--script`, `--help`), three scenes, asset loading/upload/validation, the classic scene as a `mikan-ecs` world (player plus three static collision blocks, `collide` resolution, five ordered systems, interpolated rendering), a Luau gameplay script driving movement (load errors fatal, runtime errors logged once with an idle fallback), PPM writer, frame-time and draw statistics | 47 unit tests |
+| `mikan` | the `Game` lifecycle over the platform `App` (renderer created before `init`, resizes forwarded before the game sees them, `shutdown` iff `init` ran), the `Engine` handle (`AppContext` + `&Renderer` + `render_frame`), labeled renderer-startup failures, curated re-exports of all eight engine crates (including `mikan_ecs`, `mikan_collision`, `mikan_scene`, and `mikan_script` with their common types) | 3 unit tests, 2 doc tests |
+| `games/demo2d` | built on the `mikan` facade: CLI (`--frames`, `--capture`, `--stats`, `--timeout`, `--scene`, `--sampler`, `--pixel-perfect`, `--assets`, `--size`, `--camera`, `--zoom`, `--no-vsync`, `--sprites`, `--script`, `--help`), four scenes, asset loading/upload/validation, the classic scene as a `mikan-ecs` world (player plus three static collision blocks, `collide` resolution, five ordered systems, interpolated rendering), the hierarchy scene as a `mikan-scene` world (sun, planets, moon, spin, deferred despawn), a Luau gameplay script driving movement (load errors fatal, runtime errors logged once with an idle fallback), PPM writer, frame-time and draw statistics | 52 unit tests |
 
 ## Verification: build and tests (this revision, local)
 
@@ -242,7 +300,7 @@ amendment to the roadmap, not a silent substitution:
 | --- | --- |
 | `cargo fmt --all -- --check` | pass |
 | `cargo check --workspace --all-targets` | pass |
-| `cargo test --workspace` | **248 pass, 0 fail** — 216 unit tests (47 demo2d, 40 mikan-assets, 40 mikan-ecs, 32 mikan-core, 27 mikan-render, 18 mikan-script, 9 mikan-platform, 3 mikan), 21 integration tests (7 mikan-collision-sys contacts, 6 mikan-collision broad phase, 5 mikan-ecs determinism, 3 mikan-collision cross-check), and 11 doc tests (4 mikan-ecs, 2 mikan, 2 mikan-collision, 1 mikan-assets, 1 mikan-platform, 1 mikan-render) |
+| `cargo test --workspace` | **305 pass, 0 fail** — 246 unit tests (52 demo2d, 40 mikan-assets, 42 mikan-ecs, 32 mikan-core, 27 mikan-render, 18 mikan-script, 17 mikan-scene, 9 mikan-platform, 6 mikan-scene-sys, 3 mikan), 44 integration tests (11 mikan-scene scene, 8 mikan-scene-sys graph, 7 mikan-collision-sys contacts, 6 mikan-collision broad phase, 5 mikan-ecs determinism, 4 mikan-scene cross-check, 3 mikan-collision cross-check), and 15 doc tests (4 mikan-scene, 4 mikan-ecs, 2 mikan, 2 mikan-collision, 1 mikan-assets, 1 mikan-platform, 1 mikan-render) |
 | `cargo clippy --workspace --all-targets -- -D warnings` | pass |
 | `cargo build --workspace --release` | pass |
 | `python3 scripts/generate_assets.py --check` | pass: atlas.png, star.png, atlas.json all match the generator |
@@ -272,6 +330,9 @@ format `Bgra8UnormSrgb`.
 | Scripting: the default script drives movement | `xvfb-run -a bash scripts/verify_script.sh` | holding `D`: `moved steps: 63 of 173 fixed steps; square at [700.0, 300.0]` — 480 + 63 × 3.5 = 700.5 rounds to 700, one 3.5 px fixed step per moved step |
 | Scripting: over-long directions are normalized | as above | a `(3, 4, 60)` return for exactly 60 steps: `moved steps: 60 of 430; square at [498.0, 324.0]` — the normalized `(0.6, 0.8)` path; unnormalized it would be `[570, 420]`, and a broken step counter would clamp at `[912, 552]` |
 | Scripting: failure paths | as above | syntax error, missing `mikan_step`, and missing file: exit 1 with the script path and line (`failed to load: syntax error: ...:2:`, `does not define a global function \`mikan_step\``, `could not read script ...`); a runtime `error("boom")` and a `0/0` return: exit 0, exactly one `script error:` line each, `0 moved steps` |
+| Scene startup layout | `xvfb-run -a bash scripts/verify_scene.sh` | log: `hierarchy: sun ... + [...] + moon ... | orbit 160, moon orbit 80`; capture: sun warm `(253, 196, 108)` at `[480, 300]`, first planet blue `(160, 225, 249)` at `[640, 300]`, moon star `(255, 243, 124)` at `[720, 300]` — the local-translation chain composed correctly |
+| Scene rigid rotation | as above (holding `D`) | the moon's centroid stays `239.2 px` from the sun (one orbit radius, 240 px) while its angle changes by `44.1°` — rigid rotation, not a broken scale/rotate/translate order |
+| Scene deferred despawn | as above (pressing `F`) | `0` star pixels remain and `5164` planet pixels remain: the moon alone was despawned through the queue, and the sun and planets stayed |
 | Follow camera | `xvfb-run -a bash scripts/verify_camera.sh` | world position `[912, 300]` while the capture shows the square 96x96 px at `[432..527, 252..347]`, centroid `(480.8, 300.8)` — centred, so the view scrolled |
 | Zoom | as above (`--camera follow --zoom 2`) | the square renders 192x192 px at `[384..575, 204..395]`, centroid `(482.1, 302.1)` — twice the unzoomed size |
 | Showcase scene (rotation, tint, alpha, samplers, PNG alpha) | `xvfb-run -a bash scripts/verify_showcase.sh` | `sprites 8 | batches 4 | draw calls 4`; plain center `(253, 196, 108)`; rotated box corner clear `(63, 69, 80)` while the diamond tip paints `(179, 129, 63)` above the unrotated box; tinted `(136, 156, 108)`; alpha-blended `(174, 138, 93)`; linear checker scanline: 18 distinct grays, 160/160 intermediate; nearest: black/white only; star center `(255, 243, 124)` with backdrop `(80, 97, 149)` through its corners |
@@ -348,30 +409,68 @@ exit 0; `ERROR SUMMARY: 0 errors from 0 contexts (suppressed: 0 from 0)`;
 Rust runtime internals). This is the memory-tool record `docs/ffi.md` requires
 for a native module.
 
+## Verification: the scene hierarchy benchmark (this machine, CPU only)
+
+`bash scripts/bench_scene.sh` runs a 100,000-node binary-heap hierarchy through
+the native scene graph (the C++ topology driving the C compose kernel) and
+through the Rust reference fold (`mikan_scene::reference`), 15 runs each after
+warm-up, in release mode; the result is recorded in
+`artifacts/bench/scene_100000.log`:
+
+| Implementation | ms/run | ns/node |
+| --- | --- | --- |
+| native graph (C++ + C) | 10.633 | 106.33 |
+| Rust reference fold | 0.704 | 7.04 |
+| ratio (native / reference) | **15.11** | — |
+
+The native graph is **markedly slower**, which is the expected and reported
+result: the reference gets the topology for free from a precomputed parent array,
+while the native graph carries real bookkeeping (an `unordered_map` index and
+parent lookups plus per-call traversal buffers). The compose kernel itself is at
+parity — the cross-check tests prove the two implementations agree bit for bit —
+so the gap is the graph plumbing, not the arithmetic. No speedup is claimed; the
+kernel exists because the low-level numeric layer is C's assigned home and a
+dynamic topology is C++'s, per ADR 0012. Caching the index/topology and moving
+to a `Vec`-backed node table are the obvious future work if a scene ever becomes
+hot.
+
+Valgrind (memcheck) over a full run of the benchmark binary:
+
+```
+valgrind --leak-check=full --error-exitcode=1 ./target/release/examples/bench_scene 20000
+```
+
+exit 0; `ERROR SUMMARY: 0 errors from 0 contexts (suppressed: 0 from 0)`;
+0 bytes definitely, indirectly, or possibly lost (548 bytes still reachable in 2
+blocks — Rust runtime internals, the same figure the collision kernel reports).
+The native-to-reference ratio under Valgrind is 10.37 — lower than the native
+run because the tool instruments both sides. This is the memory-tool record
+`docs/ffi.md` requires for a native module.
+
 ## Verification: CI
 
-**No CI run covers the Phase 3 and Phase 4 commits or the Phase 5 working tree:
-Phase 3 and Phase 4 are committed locally but not pushed, and Phase 5 is not
-even committed yet** (by policy, pushes require explicit authorization). The
-last pushed state, `9c3e98b` (documentation for the facade milestone; runtime
-code `92398f3`/`431d894`), is green in run
+**No CI run covers the Phase 3, Phase 4, or Phase 5 commits or the Phase 7
+working tree: Phase 3, Phase 4, and Phase 5 are committed locally but not
+pushed, and Phase 7 is not even committed yet** (by policy, pushes require
+explicit authorization). The last pushed state, `9c3e98b` (documentation for the
+facade milestone; runtime code `92398f3`/`431d894`), is green in run
 [38753924627](https://github.com/neverseeyouagainnnnn/mikan/actions/runs/38753924627):
 fmt/check/tests/clippy/release, the Xvfb smoke job (smoke, input, camera), and
 the Windows/macOS compile checks. The repository's `.github/workflows/ci.yml`
 and `scripts/verify.sh` now also run the generator check, the ecs, collision,
-and scripting verifications, and the showcase, stress, pixel-perfect, and
+scripting, and scene verifications, and the showcase, stress, pixel-perfect, and
 asset-failure verifications, so the next authorized push will exercise them in
-CI. The Windows/macOS compile checks will then build the C kernel and the
-vendored Luau C++ for the first time; the GitHub runners ship the required
-toolchains, but that has not been exercised here (no push since they were
-added).
+CI. The Windows/macOS compile checks will then build the C collision kernel, the
+C transform kernel and C++ scene graph, and the vendored Luau C++ for the first
+time; the GitHub runners ship the required toolchains, but that has not been
+exercised here (no push since they were added).
 
 ## Verification levels by platform (ADR 0005)
 
 | Platform | Level | Evidence |
 | --- | --- | --- |
-| Linux / X11 (software Vulkan) | **runtime-verified** | local smoke, input, camera, ecs, collision, scripting, showcase, stress, pixel-perfect, and asset-failure checks; CI smoke job for the previous milestone |
-| Windows x86-64 | **compile-verified** for the previous milestone | CI `cargo check --workspace --all-targets`; the new crates — including the C collision kernel and the vendored Luau C++ — have not been compile-checked on Windows or macOS yet (no push since they were added) |
+| Linux / X11 (software Vulkan) | **runtime-verified** | local smoke, input, camera, ecs, collision, scripting, scene, showcase, stress, pixel-perfect, and asset-failure checks; CI smoke job for the previous milestone |
+| Windows x86-64 | **compile-verified** for the previous milestone | CI `cargo check --workspace --all-targets`; the new crates — including the C collision kernel, the C transform kernel and C++ scene graph, and the vendored Luau C++ — have not been compile-checked on Windows or macOS yet (no push since they were added) |
 | macOS (arm64) | **compile-verified** for the previous milestone | as above |
 | Linux / Wayland | not verified | path exists through `winit`; never exercised |
 | Hardware GPU / Windows / macOS runtime | not verified | no such machine in the verification environment |
@@ -410,6 +509,15 @@ added).
   supported construct yet. Cells are emptied in place and reused across steps,
   but `pairs` sorts once per step — O(n log n) at gameplay scale, stated in
   `docs/collision.md`.
+- **Scene scope:** the hierarchy is 2D-only, world-space, and rebuilt from
+  scratch each step; there is no `LocalTransform`/`Transform` split, no 3D, no
+  scene serialization or prefabs, no world-space-preserving reparent bake, and
+  no multiple simultaneously active scenes (`SceneManager` runs one active scene
+  per update). `GlobalTransform2d` read inside a running system sees the
+  *previous* step's world (a documented one-step lag; readers after `update` see
+  the current step). An entity that loses its `Transform2d` degrades to the
+  parent frame rather than becoming invalid. The native graph is markedly slower
+  than the Rust reference fold, as recorded above; the guide is `docs/scene.md`.
 - **Scripting scope:** one script per engine, single-threaded, no hot reload
   (scripts load at startup). The 64 MiB limit bounds memory, not time: a long
   `mikan_step` still costs the frame it runs in. Luau numbers cross the
@@ -426,7 +534,7 @@ added).
   hardware-GPU measurement exists, so the 10,000-sprite figure is a measured
   floor of what the pipeline submits (one draw call), not a hardware estimate.
 
-## Milestone changes (Phase 3 and Phase 4 committed to `main`; Phase 5 uncommitted)
+## Milestone changes (Phase 3–5 committed to `main`; Phase 7 uncommitted)
 
 The facade milestone (`5ffe1c7`, `431d894`, documentation `92398f3`/`9c3e98b`)
 plus the Phase 3 change set, committed locally on 2026-10-16 as eight commits
@@ -436,7 +544,7 @@ plus the Phase 3 change set, committed locally on 2026-10-16 as eight commits
 
 In detail:
 
-- **New crate:** `crates/mikan-assets` (`image.rs`, `sheet.rs`, tests) and its
+- **New crate:** `crates/assets` (`image.rs`, `sheet.rs`, tests) and its
   workspace wiring; `mikan` re-exports it.
 - **`mikan-core`:** new `uv.rs` (`UvRect`, moved from `mikan-render`, with a
   collapsible `inset`); `camera.rs` gains `pixel_perfect`,
@@ -461,7 +569,7 @@ The Phase 4 (ECS-lite) change set was committed as five commits
 (`813cbc2`..`0f74e34`) on top of `5c95578`, listed here so the inventory is
 complete:
 
-- **New crate:** `crates/mikan-ecs` (`entity.rs`, `world.rs`, `schedule.rs`,
+- **New crate:** `crates/ecs` (`entity.rs`, `world.rs`, `schedule.rs`,
   `error.rs`, `tests/determinism.rs`, `examples/fixed_steps.rs`) and its
   workspace wiring; `mikan` depends on it and re-exports it.
 - **`mikan`:** re-exports of `mikan_ecs`, `DeadEntity`, `Entity`, `Schedule`,
@@ -475,13 +583,13 @@ complete:
 - **Docs:** ADR 0009, `docs/ecs.md`, and refreshed README, ARCHITECTURE,
   DEVELOPMENT, CHANGELOG, and this file.
 
-The Phase 5 (collision + Luau scripting) change set is **uncommitted in the
-working tree** on top of `0f74e34`, listed here so the inventory is complete:
+The Phase 5 (collision + Luau scripting) change set was committed as `5f63579`,
+listed here so the inventory is complete:
 
-- **New crates:** `crates/mikan-collision-sys` (`src/mikan_contacts.h`,
+- **New crates:** `crates/collision-sys` (`src/mikan_contacts.h`,
   `src/contacts.c`, `build.rs`, `src/lib.rs`, `tests/contacts.rs`),
-  `crates/mikan-collision` (`broadphase.rs`, `reference.rs`, `tests/`,
-  `examples/bench.rs`), `crates/mikan-script` (`src/lib.rs` with 18 tests),
+  `crates/collision` (`broadphase.rs`, `reference.rs`, `tests/`,
+  `examples/bench.rs`), `crates/script` (`src/lib.rs` with 18 tests),
   and their workspace wiring.
 - **Root manifest:** workspace members and dependencies plus `mlua 0.11.6`
   (`luau` + `vendored`).
@@ -499,6 +607,37 @@ working tree** on top of `0f74e34`, listed here so the inventory is complete:
   and refreshed README, ARCHITECTURE, DEVELOPMENT, FFI policy, ECS guide,
   CHANGELOG, and this file.
 
+The Phase 7 (scene and entity system) change set is **uncommitted in the working
+tree** on top of `5f63579`, together with the crate-directory renames
+(`crates/mikan-*` → `crates/*`), listed here so the inventory is complete:
+
+- **Crate renames:** every workspace crate directory drops the `mikan-` prefix
+  (`crates/core`, `crates/assets`, `crates/ecs`, `crates/collision-sys`,
+  `crates/collision`, `crates/scene-sys`, `crates/scene`, `crates/script`,
+  `crates/platform`, `crates/render`, `crates/mikan`); package names are
+  unchanged, so the renames do not touch the import graph.
+- **New crates:** `crates/scene-sys` (`src/transform.c` and
+  `src/mikan_transform.h`, `src/scene_graph.cpp` and
+  `src/mikan_scene_graph.h`, `build.rs`, `src/lib.rs`, `src/graph.rs`,
+  `tests/graph.rs`), `crates/scene` (`transform.rs`, `hierarchy.rs`,
+  `despawn.rs`, `scene.rs`, `manager.rs`, `reference.rs`,
+  `examples/bench_scene.rs`, `examples/hierarchy.rs`, `tests/cross_check.rs`,
+  `tests/scene.rs`), and their workspace wiring.
+- **`mikan-ecs`:** `Entity::to_bits`/`from_bits` (opaque `u64` identity), so the
+  native graph and outside code can carry handles without ECS types.
+- **`mikan`:** re-exports of the scene crate with its common types
+  (`Transform2d`, `GlobalTransform2d`, `Hierarchy`, `Scene`, `SceneManager`, …).
+- **`demo2d`:** new `renderable.rs` (the sprite collector over
+  `(SpriteRenderer, GlobalTransform2d)`) and `hierarchy.rs` (the sun/planets/moon
+  scene, the `Spin` system, and deferred despawn); `player.rs`, `blocks.rs`,
+  and the classic `scene.rs`/`demo.rs` migrated to the transform hierarchy;
+  `cli.rs` and `main.rs` gain the `hierarchy` scene and its controls and log
+  lines.
+- **Scripts:** new `verify_scene.{sh,py}` and `bench_scene.sh`; `lib.sh`,
+  `verify.sh`, and the CI smoke job extended with the scene steps.
+- **Docs:** ADR 0012, `docs/scene.md`, and refreshed README, ARCHITECTURE,
+  DEVELOPMENT, FFI policy, CHANGELOG, and this file.
+
 ## Next milestone
 
 Ordered by intended value; each needs its own design note before implementation.
@@ -510,7 +649,8 @@ Ordered by intended value; each needs its own design note before implementation.
    benchmark next to the `llvmpipe` numbers.
 
 Native C/C++ modules are no longer deferred in principle: ADR 0010 (the C
-collision kernel) and ADR 0011 (the vendored C++ Luau VM) introduced the first
-two, each with its justification and honest measurements. Every further module
-must still clear `docs/ffi.md` (ADR 0004) — or arrive through an equally
-explicit ADR that states what changed, as ADR 0010 did.
+collision kernel), ADR 0011 (the vendored C++ Luau VM), and ADR 0012 (the C
+transform kernel and Mikan's own C++ scene graph) introduced the first three,
+each with its justification and honest measurements. Every further module must
+still clear `docs/ffi.md` (ADR 0004) — or arrive through an equally explicit ADR
+that states what changed, as ADR 0010 and ADR 0012 did.

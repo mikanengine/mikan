@@ -16,8 +16,9 @@
 //! window lifecycle remain in [`mikan_platform`], driven by the same runner an
 //! application can still use directly through [`mikan_platform::App`]; the
 //! engine crates stay reachable as [`mikan_core`], [`mikan_platform`],
-//! [`mikan_render`], [`mikan_assets`], [`mikan_ecs`], [`mikan_collision`], and
-//! [`mikan_script`] for anything this crate does not re-export.
+//! [`mikan_render`], [`mikan_assets`], [`mikan_ecs`], [`mikan_collision`],
+//! [`mikan_scene`], and [`mikan_script`] for anything this crate does not
+//! re-export.
 //!
 //! # Example
 //!
@@ -84,6 +85,7 @@ pub use mikan_core;
 pub use mikan_ecs;
 pub use mikan_platform;
 pub use mikan_render;
+pub use mikan_scene;
 pub use mikan_script;
 
 // Curated re-exports so that an application needs no other dependency: the
@@ -99,5 +101,9 @@ pub use mikan_platform::{
 pub use mikan_render::{
     CaptureBuffer, Frame, FrameStats, RenderError, RenderSettings, Renderer, SamplerMode, Sprite,
     Texture, TextureDescriptor, TextureEncoding, UvRect,
+};
+pub use mikan_scene::{
+    DespawnQueue, GlobalTransform2d, Hierarchy, HierarchyError, Scene, SceneError, SceneId,
+    SceneManager, Transform2d, flush_despawns, propagate_transforms, request_despawn,
 };
 pub use mikan_script::{ScriptEngine, ScriptError, StepInput, StepOutput};

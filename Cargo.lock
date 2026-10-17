@@ -1021,6 +1021,7 @@ dependencies = [
  "mikan-ecs",
  "mikan-platform",
  "mikan-render",
+ "mikan-scene",
  "mikan-script",
  "thiserror 2.0.21",
 ]
@@ -1089,6 +1090,22 @@ dependencies = [
  "raw-window-handle",
  "thiserror 2.0.21",
  "wgpu",
+]
+
+[[package]]
+name = "mikan-scene"
+version = "0.1.0"
+dependencies = [
+ "mikan-ecs",
+ "mikan-scene-sys",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "mikan-scene-sys"
+version = "0.1.0"
+dependencies = [
+ "cc",
 ]
 
 [[package]]

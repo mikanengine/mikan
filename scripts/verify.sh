@@ -51,8 +51,11 @@ if command -v xvfb-run >/dev/null 2>&1; then
 
         echo "==> scripting verification: Luau drives movement; failure paths behave"
         RUST_LOG="${RUST_LOG:-info}" xvfb-run -a bash scripts/verify_script.sh
+
+        echo "==> scene verification: transform hierarchy, rigid spin, deferred despawn"
+        RUST_LOG="${RUST_LOG:-info}" xvfb-run -a bash scripts/verify_scene.sh
     else
-        echo "==> skipping the input, camera, ecs, collision, and scripting verification: xdotool is not installed"
+        echo "==> skipping the input, camera, ecs, collision, scripting, and scene verification: xdotool is not installed"
     fi
 
     echo "==> showcase verification: rotation, tint, alpha, samplers, PNG alpha"

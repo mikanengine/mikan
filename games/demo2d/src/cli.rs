@@ -53,6 +53,8 @@ pub enum Scene {
     /// The original demo: a driveable square and a corner marker.
     #[default]
     Classic,
+    /// A sun, orbiting planets, and a moon linked by the transform hierarchy.
+    Hierarchy,
     /// A fixed gallery: rotation, tint, alpha, nearest vs linear, and the
     /// transparent star, each at a documented position.
     Showcase,
@@ -64,6 +66,7 @@ impl Scene {
     fn parse(value: &str) -> Option<Self> {
         match value {
             "classic" => Some(Self::Classic),
+            "hierarchy" => Some(Self::Hierarchy),
             "showcase" => Some(Self::Showcase),
             "stress" => Some(Self::Stress),
             _ => None,
@@ -75,6 +78,7 @@ impl Scene {
     pub const fn name(self) -> &'static str {
         match self {
             Self::Classic => "classic",
+            Self::Hierarchy => "hierarchy",
             Self::Showcase => "showcase",
             Self::Stress => "stress",
         }
@@ -434,7 +438,7 @@ OPTIONS:
     --capture <PATH>      Write the last presented frame to PATH as a binary PPM
     --stats               Print frame-time and draw statistics on exit
     --timeout <SECS>      Abort if N frames are not presented in time (default 30)
-    --scene <NAME>        classic (default), showcase, or stress
+    --scene <NAME>        classic (default), hierarchy, showcase, or stress
     --sampler <MODE>      Force linear or nearest sampling scene-wide
     --assets <DIR>        Asset directory (default games/demo2d/assets)
     --script <PATH>       Luau gameplay script (default games/demo2d/scripts/player.luau)
@@ -448,11 +452,14 @@ OPTIONS:
 
 SCENES:
     classic     The driveable square and corner marker, loaded from atlas.png
+    hierarchy   A sun, three orbiting planets, and a moon, linked as entities
     showcase    Rotation, tint, alpha, nearest vs linear, and star.png alpha
     stress      N moving sprites drawn from one texture, for benchmarks
 
 CONTROLS:
-    WASD or arrow keys   Move the square
+    WASD or arrow keys   Move the square (classic)
+    A / D                Spin the sun, orbiting the hierarchy scene
+    F                    Despawn the moon (hierarchy)
     Escape               Quit
     Close the window     Quit
 "
