@@ -22,12 +22,14 @@
 //!
 //! [`SpriteRenderer`]: crate::renderable::SpriteRenderer
 
+use std::path::Path;
 use std::time::Duration;
 
 use mikan::{
-    Camera2d, CaptureBuffer, DeadEntity, DeviceEvent, Engine, Entity, Frame, FrameOutcome,
-    FrameStats, Game, KeyCode, PhysicalKey, RenderError, SamplerMode, Scene, ScriptEngine,
-    ScriptError, Sprite, StepInput, Transform2d,
+    AudioError, AudioSystem, Camera2d, CaptureBuffer, DeadEntity, DeviceEvent, Engine, Entity,
+    Frame, FrameOutcome, FrameStats, Game, KeyCode, PhysicalKey, PlaySettings, RenderError,
+    SamplerMode, Scene, ScriptEngine, ScriptError, Sound, SoundData, Sprite, StepInput,
+    Transform2d,
 };
 use thiserror::Error;
 
@@ -72,6 +74,11 @@ pub enum DemoError {
     #[error(transparent)]
     Input(#[from] mikan::InputError),
 
+    /// The audio lane could not be set up (a missing or broken blip, or a
+    /// mixer that cannot start).
+    #[error(transparent)]
+    Audio(#[from] AudioError),
+
     /// The requested frames were not presented within the timeout.
     #[error(
         "presented {presented} of {requested} requested frames within {timeout_secs}s; \
@@ -108,6 +115,146 @@ struct Intent {
     despawn_moon: bool,
 }
 
+/// Frames per render block, and the rate the mixer renders at.
+const AUDIO_BLOCK_FRAMES: u32 = 1024;
+/// The rate the demo opens the audio system at.
+const AUDIO_SAMPLE_RATE: u32 = 48_000;
+/// The sound the demo plays, next to the other assets.
+const BLIP_FILE: &str = "blip.wav";
+
+/// The `--audio` lane: one audio system (the device when one exists, the
+/// deterministic offline ring otherwise), the blip loaded through the real
+/// asset pipeline, and the bookkeeping the verification script greps for.
+struct AudioLane {
+    system: AudioSystem,
+    blip: Sound,
+    /// Offline drain buffer, exactly one block long.
+    scratch: Vec<i16>,
+    /// Whether movement was active at the previous fixed step, for the
+    /// play-on-edge behavior.
+    moving: bool,
+    /// Successful `play` calls; logged at shutdown, and the count the
+    /// verification script asserts on.
+    plays: u64,
+    /// A failure was already logged; later ones are suppressed so a broken
+    /// device cannot flood the log at frame rate.
+    error_reported: bool,
+}
+
+impl AudioLane {
+    /// Opens the device (or the offline fallback) and loads the blip.
+    fn open(assets: &Path) -> Result<Self, AudioError> {
+        let mut system = match AudioSystem::new_device(AUDIO_SAMPLE_RATE, AUDIO_BLOCK_FRAMES) {
+            Ok(system) => {
+                log::info!(
+                    "audio: device backend {} ({}), {} Hz, block {} frames",
+                    system.backend_name(),
+                    system.device_name(),
+                    system.sample_rate(),
+                    AUDIO_BLOCK_FRAMES,
+                );
+                system
+            }
+            Err(error) => {
+                log::warn!(
+                    "audio: no usable output device ({error}); using the offline backend at \
+                     {} Hz, block {} frames",
+                    AUDIO_SAMPLE_RATE,
+                    AUDIO_BLOCK_FRAMES,
+                );
+                AudioSystem::new_offline(AUDIO_SAMPLE_RATE, AUDIO_BLOCK_FRAMES)?
+            }
+        };
+        let path = assets.join(BLIP_FILE);
+        let data = SoundData::load_wav(&path)?;
+        log::info!(
+            "audio: {} -> {} frames at {} Hz, {} channel(s)",
+            path.display(),
+            data.frames(),
+            data.sample_rate(),
+            data.channels(),
+        );
+        let blip = system.load_sound(&data)?;
+        Ok(Self {
+            system,
+            blip,
+            scratch: vec![0_i16; (AUDIO_BLOCK_FRAMES * 2) as usize],
+            moving: false,
+            plays: 0,
+            error_reported: false,
+        })
+    }
+
+    /// One fixed step of the lane: entering movement plays the blip, with
+    /// the pitch following the vertical direction, so the verification can
+    /// tell the two presses apart.
+    fn step(&mut self, left: bool, right: bool, up: bool, down: bool) {
+        let moving = left || right || up || down;
+        if moving && !self.moving {
+            let pitch = match (up, down) {
+                (true, false) => 1.25,
+                (false, true) => 0.75,
+                _ => 1.0,
+            };
+            let settings = PlaySettings::new().with_volume(0.5).with_pitch(pitch);
+            match self.system.play(self.blip, settings) {
+                Ok(_) => {
+                    self.plays += 1;
+                    log::info!("audio: blip #{} at pitch {pitch:.2}", self.plays);
+                }
+                Err(error) => self.fail("play the blip", &error),
+            }
+        }
+        self.moving = moving;
+    }
+
+    /// One display frame of the lane: the device path needs nothing (the
+    /// mixer runs on the audio thread), the offline path renders one block
+    /// and drains the ring it filled.
+    fn update(&mut self) {
+        if let Err(error) = self.system.update() {
+            self.fail("render a block", &error);
+            return;
+        }
+        if !self.system.is_offline() {
+            return;
+        }
+        loop {
+            match self.system.drain_samples(&mut self.scratch) {
+                Ok(read) if read < self.scratch.len() / 2 => break,
+                Ok(_) => {}
+                Err(error) => {
+                    self.fail("drain the offline ring", &error);
+                    break;
+                }
+            }
+        }
+    }
+
+    /// Logs the first failure only.
+    fn fail(&mut self, action: &str, error: &AudioError) {
+        if !self.error_reported {
+            log::warn!("audio: could not {action}: {error}");
+            self.error_reported = true;
+        }
+    }
+
+    /// The shutdown summary line: the demo's own play count plus the mixer's
+    /// counters.
+    fn summary(&self) -> String {
+        let stats = self.system.stats();
+        format!(
+            "{} plays, {} voices started, {} finished, {} blocks mixed, {} overruns, backend {}",
+            self.plays,
+            stats.voices_started,
+            stats.voices_finished,
+            stats.blocks_mixed,
+            self.system.overruns(),
+            self.system.backend_name(),
+        )
+    }
+}
+
 /// Demo application state.
 pub struct Demo {
     cli: Cli,
@@ -126,6 +273,9 @@ pub struct Demo {
     /// The `--actions` lane: action mapping over the native input module.
     /// `None` reads raw keys from [`mikan::InputState`] as before.
     actions: Option<ActionMapping>,
+    /// The `--audio` lane: the mixer, the blip, and the offline ring when
+    /// there is no device. `None` keeps the demo silent.
+    audio: Option<AudioLane>,
     /// Steps in which the wheel action carried a nonzero value.
     wheel_ticks: u32,
     /// A script step error has already been logged; later ones are suppressed
@@ -238,6 +388,9 @@ impl Demo {
         if before != after {
             self.moved_steps += 1;
         }
+        if let Some(lane) = self.audio.as_mut() {
+            lane.step(left, right, up, down);
+        }
         Ok(())
     }
 
@@ -254,6 +407,7 @@ impl Demo {
             hierarchy: None,
             script: None,
             actions: None,
+            audio: None,
             wheel_ticks: 0,
             script_error_reported: false,
             fixed_steps: 0,
@@ -546,6 +700,10 @@ impl Game for Demo {
             );
             self.actions = Some(mapping);
         }
+        if self.cli.audio {
+            self.audio = Some(AudioLane::open(&self.cli.assets)?);
+            log::info!("audio: the blip plays when movement starts (pitch follows up/down)");
+        }
 
         // Start where the scene's default view is centered: the visible world
         // region's middle, so the player is on screen in every mode.
@@ -690,6 +848,13 @@ impl Game for Demo {
         let clear_color = engine.ctx().config().clear_color;
         let (width, height) = engine.renderer().size();
 
+        // One display frame of the audio lane: a no-op on the device path,
+        // one block plus a full drain on the offline path, which is what
+        // keeps the ring from ever overrunning.
+        if let Some(lane) = self.audio.as_mut() {
+            lane.update();
+        }
+
         // Sprites borrow the assets; the borrow ends after the render call,
         // which is when the capture buffer is borrowed mutably.
         let Some(assets) = self.assets.as_ref() else {
@@ -772,6 +937,9 @@ impl Game for Demo {
                 self.moved_steps,
                 self.wheel_ticks,
             );
+        }
+        if let Some(lane) = self.audio.as_ref() {
+            log::info!("audio: {}", lane.summary());
         }
     }
 }

@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
-"""Generates demo2d's PNG assets and sprite-sheet metadata.
+"""Generates demo2d's PNG assets, sprite-sheet metadata, and its WAV sound.
 
 The demo loads real files at runtime, so the files it loads are committed to
 the repository and produced by this script. Everything is deterministic: fixed
 colors and geometry, fixed PNG writing (filter 0, zlib level 9), fixed JSON
-formatting. ``--check`` regenerates in memory and compares against the files on
-disk, which is how CI catches an asset that was edited by hand or an image that
-no longer matches the script.
+formatting, and a fixed-sample-rate sine sweep quantized to 16-bit PCM.
+``--check`` regenerates in memory and compares against the files on disk, which
+is how CI catches an asset that was edited by hand or an image that no longer
+matches the script.
 
 Assets written under ``games/demo2d/assets``:
 
@@ -17,6 +18,9 @@ Assets written under ``games/demo2d/assets``:
   Aseprite subset ``mikan-assets`` reads (see docs/sprite-sheets.md).
 * ``star.png`` — a 24x24 five-pointed yellow star with anti-aliased edges and
   fully transparent corners, for proving PNG alpha.
+* ``blip.wav`` — a 120 ms mono 48 kHz 16-bit PCM blip: a 1320 Hz → 660 Hz
+  linear sweep with a 4 ms attack and a quadratic fade, the sound the demo
+  plays through the real asset pipeline (see docs/audio.md).
 
 Colors are specified as linear sRGB components, the units the engine speaks;
 the PNG stores the sRGB-encoded 8-bit values a display would show, which is
@@ -62,6 +66,15 @@ STAR_INNER_RADIUS = 4.4
 # staircase; corners stay fully transparent because the star does not reach
 # them.
 STAR_SUPERSAMPLING = 4
+
+# The blip the demo plays on a movement edge: fixed rate and envelope so the
+# committed WAV is reproducible.
+BLIP_SAMPLE_RATE = 48_000
+BLIP_SECONDS = 0.12
+BLIP_START_HZ = 1_320.0
+BLIP_END_HZ = 660.0
+BLIP_PEAK = 0.6
+BLIP_ATTACK_SECONDS = 0.004
 
 
 def srgb_byte(linear):
@@ -203,11 +216,41 @@ def atlas_json():
     return (json.dumps(document, indent=2) + "\n").encode()
 
 
+def blip_wav():
+    """The demo's sound: a 120 ms downward sweep, 16-bit PCM, mono, 48 kHz."""
+    frames = round(BLIP_SAMPLE_RATE * BLIP_SECONDS)
+    span = frames - 1
+    samples = bytearray()
+    phase = 0.0
+    for index in range(frames):
+        seconds = index / BLIP_SAMPLE_RATE
+        frequency = BLIP_START_HZ + (BLIP_END_HZ - BLIP_START_HZ) * (index / span)
+        phase += 2.0 * math.pi * frequency / BLIP_SAMPLE_RATE
+        attack = min(1.0, seconds / BLIP_ATTACK_SECONDS)
+        fade = (1.0 - index / span) ** 2
+        samples += struct.pack(
+            "<h", round(BLIP_PEAK * attack * fade * math.sin(phase) * 32_767)
+        )
+    fmt = struct.pack(
+        "<HHIIHH",
+        1,  # PCM
+        1,  # mono
+        BLIP_SAMPLE_RATE,
+        BLIP_SAMPLE_RATE * 2,  # byte rate
+        2,  # block align
+        16,  # bits per sample
+    )
+    chunks = b"fmt " + struct.pack("<I", len(fmt)) + fmt
+    chunks += b"data" + struct.pack("<I", len(samples)) + bytes(samples)
+    return b"RIFF" + struct.pack("<I", 4 + len(chunks)) + b"WAVE" + chunks
+
+
 def expected_files():
     return {
         "atlas.png": png_bytes(ATLAS_WIDTH, ATLAS_HEIGHT, atlas_pixels),
         "star.png": png_bytes(STAR_SIZE, STAR_SIZE, star_pixel),
         "atlas.json": atlas_json(),
+        "blip.wav": blip_wav(),
     }
 
 
@@ -243,7 +286,7 @@ def check():
         "atlas.png": (ATLAS_WIDTH, ATLAS_HEIGHT, atlas_pixels),
         "star.png": (STAR_SIZE, STAR_SIZE, star_pixel),
     }
-    json_expectations = {"atlas.json": atlas_json()}
+    raw_expectations = {"atlas.json": atlas_json(), "blip.wav": blip_wav()}
 
     for name, (width, height, pixel) in pngs.items():
         path = ASSETS / name
@@ -260,7 +303,7 @@ def check():
         else:
             print(f"ok: {path} matches the generator")
 
-    for name, expected in json_expectations.items():
+    for name, expected in raw_expectations.items():
         path = ASSETS / name
         if not path.exists():
             failures.append(f"{path} is missing")

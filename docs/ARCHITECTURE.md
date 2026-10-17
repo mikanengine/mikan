@@ -47,6 +47,8 @@ crates/scene-sys       the C compose kernel and the C++ scene graph; uses unsafe
 crates/scene           safe scene face: transforms, hierarchy, scenes, manager
 crates/input-sys       the C device backend and the C++ action runtime; uses unsafe
 crates/input           safe input face: InputSystem, actions, contexts, key mapping
+crates/audio-sys       the C device backend over vendored miniaudio and the C++ mixer; uses unsafe
+crates/audio           safe audio face: AudioSystem, sound/voice handles, the offline loop
 crates/script          sandboxed Luau VM and the gameplay step contract
 crates/platform        winit is its only OS dependency; no graphics
 crates/render          wgpu is its only graphics dependency; no event handling
@@ -91,10 +93,44 @@ CPU-side asset loading: files in, pixels and metadata out. It depends on
   frames). `SheetFrame::uv` converts a frame to an inset `UvRect` so linear
   sampling never reads a neighbouring frame's texels. The format is documented
   in `docs/sprite-sheets.md`.
+- `SoundData` — a WAV file decoded to mono/stereo `f32` at its source rate,
+  from the strict subset documented in `docs/audio.md` (RIFF/WAVE little-endian
+  PCM and IEEE float, `WAVE_FORMAT_EXTENSIBLE` for the standard GUIDs, a
+  `2^24`-frame cap with a fallible reservation, and a specific error for every
+  rejection — never a partial decode). It is the input the audio mixer copies.
 
 The split is deliberate: the render layer accepts pixels (`TextureDescriptor`)
 and knows nothing about files; the application connects the two, and chooses
 the texture encoding (`Linear` for procedural data, `Srgb` for standard PNGs).
+The audio mixer accepts `f32` samples and knows nothing about files either; the
+application decides whether to use the offline backend when no device exists.
+
+### `mikan-audio-sys` and `mikan-audio`
+
+The audio boundary, split the same way — but this is the first module whose
+low-level C layer owns an operating-system resource and a second thread.
+
+`-sys` owns a C device backend (`mikan_audio_backend`: the context and stream
+over vendored miniaudio 0.11.25, the realtime output callback, and the
+deterministic offline ring with `pump`/`read_s16`/overruns) and a hand-written
+C++ mixer runtime (`mikan_audio_runtime`: fixed pools of 256 sounds and 64
+voices, `f32` stereo mixing with linear-interpolation resampling, bus and
+master gain atoms, and a bounded single-producer/single-consumer command queue
+drained at block boundaries). The two layers cross exactly one function
+(`mikan_audio_runtime_render`) and share no types. Its `build.rs` compiles each
+file with warnings-as-errors and C++ with `-fno-exceptions -fno-rtti`; `unsafe`
+is allowed there with the reason recorded in the crate root, and `reference` is
+an independent Rust mixer kept as the test oracle (cross-checked bit for bit in
+the s16 domain). The vendored miniaudio's silent null backend is disabled, so
+"no device" is an honest `NO_DEVICE` the caller handles, not a silent fallback.
+
+`mikan-audio` is the safe face: `AudioSystem` (a device or the offline backend,
+`update()` that is correct on both), `Sound`/`Voice` generation-checked
+handles, `PlaySettings`/`Bus`, and the offline-only `drain_samples`/`overruns`.
+It depends on `mikan-audio-sys` and on `mikan-assets` (to accept `SoundData`),
+contains no `unsafe`, and is deliberately neither `Send` nor `Sync` — the
+native contract is one control thread plus the render side. The guide is
+`docs/audio.md`, the decision ADR 0014.
 
 ### `mikan-ecs`
 
@@ -306,6 +342,14 @@ other layers reach it through the facade's re-exports.
       |     |  +-----------+------------+             |             |
       |     |  | mikan-input (safe)     |             |             |
       |     |  +------------------------+             |             |
+      |     |  +------------------------+             |             |
+      |     |  | mikan-audio-sys        |             |             |
+      |     |  | (miniaudio + C++       |             |             |
+      |     |  |  mixer; unsafe)        |             |             |
+      |     |  +-----------+------------+             |             |
+      |     |  +-----------+------------+             |             |
+      |     |  | mikan-audio (safe)     |             |             |
+      |     |  +------------------------+             |             |
       +-----+------------------------+----------------+-------------+
                                    |
                               +----+----+
@@ -320,16 +364,19 @@ other layers reach it through the facade's re-exports.
 Rules that keep this acyclic and comprehensible:
 
 - `mikan-core`, `mikan-ecs`, `mikan-collision-sys`, `mikan-scene-sys`,
-  `mikan-input-sys`, and `mikan-script` depend on nothing else in the workspace
-  (third-party crates aside, `thiserror`, `winit` for input-sys's HID constants,
-  and `mlua` respectively): the ECS is simulation data and scheduling, the
-  collision and transform kernels are plain data in and out, the scene graph
-  holds topology only, the input backend/runtime pair knows nothing about
-  windows or rendering, and the script VM knows nothing about the engine.
+  `mikan-input-sys`, `mikan-audio-sys`, and `mikan-script` depend on nothing
+  else in the workspace (third-party crates aside, `thiserror`, `winit` for
+  input-sys's HID constants, the vendored miniaudio for audio-sys, and `mlua`
+  respectively): the ECS is simulation data and scheduling, the collision and
+  transform kernels are plain data in and out, the scene graph holds topology
+  only, the input backend/runtime pair knows nothing about windows or
+  rendering, the audio backend/mixer pair knows nothing about the asset
+  pipeline, and the script VM knows nothing about the engine.
 - `mikan-collision` depends on `mikan-collision-sys` only, `mikan-scene`
   on `mikan-scene-sys` only, and `mikan-input` on `mikan-input-sys` plus
   `mikan-platform` (to translate its `DeviceEvent`) — the safe wrapper pattern
-  `docs/ffi.md` prescribes.
+  `docs/ffi.md` prescribes. `mikan-audio` depends on `mikan-audio-sys` plus
+  `mikan-assets` (whose `SoundData` it accepts), never on `mikan-platform`.
 - `mikan-assets` depends on `mikan-core` only: no windowing, no graphics.
 - `mikan-platform` and `mikan-render` never depend on each other, and
   `mikan-render` does not depend on `mikan-assets` — the application glues
@@ -541,7 +588,7 @@ Rules:
 
 ## 9. Native interoperability boundaries
 
-Three first-party native subsystems and one vendored native runtime exist,
+Four first-party native subsystems and two vendored native runtimes exist,
 introduced by explicit decision:
 
 - **The C99 collision kernel** (`crates/collision-sys`), wrapped by the
@@ -570,6 +617,19 @@ introduced by explicit decision:
   including the honest benchmark result: the C backend is slower than the Rust
   oracle and the full engine step stays under ≈40 ns/event, with no speedup
   claimed.
+- **The C audio device backend and C++ mixer** (`crates/audio-sys`), wrapped by
+  the safe `mikan-audio`, over vendored miniaudio. This is the first module
+  whose C layer owns an operating-system resource (an output device) and a
+  second thread (the callback), and the first with a documented cross-thread
+  protocol: a bounded command queue in, atomic snapshots out. The mixer itself
+  is a hand-written C++ runtime with fixed pools that allocates only in
+  `add_sound`; the offline backend runs the same render function without a
+  device, and `reference` cross-checks the mixing arithmetic bit for bit. The
+  vendored miniaudio's null backend is deliberately disabled so "no device" is
+  reported, not hidden. It is the fourth crate where `unsafe` is allowed. ADR
+  0014 records the decision, including the measured result: the full 64-voice
+  pool costs under 1 % of the realtime budget at 48 kHz, with no speedup over a
+  Rust baseline claimed.
 - **The vendored Luau VM (C++)**, compiled by `mlua`'s `vendored` feature and
   consumed through the safe `mikan-script`. Mikan writes no C++ glue; the
   surface is `extern "C"` functions generated by `mlua-sys`. Scripts are
@@ -580,9 +640,11 @@ introduced by explicit decision:
 The policy that governs these and any future native module — ownership, ABI,
 error translation, thread safety, and the criteria that make a module worth
 writing in C or C++ at all — is documented in [`ffi.md`](ffi.md); ADR 0004
-remains the baseline and ADRs 0010, 0012, and 0013 supersede it for the
-collision, scene, and input modules respectively. ADRs 0006–0009 record that
-the four milestones before Phase 5 added none, with the reason.
+remains the baseline and ADRs 0010, 0012, 0013, and 0014 supersede it for the
+collision, scene, input, and audio modules respectively. The vendored miniaudio
+is compiled by its own build system under Mikan's configured flags and is not a
+hand-written module, the same category as the vendored Luau VM. ADRs 0006–0009
+record that the four milestones before Phase 5 added none, with the reason.
 
 ## 10. Extension points
 

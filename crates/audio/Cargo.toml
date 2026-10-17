@@ -1,0 +1,18 @@
+[package]
+name = "mikan-audio"
+description = "The audio system for Mikan: sound loading through the asset pipeline, voice playback control, buses, and mixing over the native C backend and C++ runtime."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+mikan-assets.workspace = true
+mikan-audio-sys.workspace = true
+thiserror.workspace = true

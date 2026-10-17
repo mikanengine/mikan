@@ -18,6 +18,36 @@ listed here.
 
 ### Added
 
+- `mikan-audio-sys` (C device backend over vendored miniaudio 0.11.25 and a
+  hand-written C++ mixer runtime) and safe `mikan-audio`: WAV sounds loaded
+  through the real asset pipeline, 64-voice mixing in fixed pools with pitch,
+  volume, and loop controls, per-voice buses plus master gain, generation
+  checked sound and voice handles, a deterministic offline backend
+  (`pump`/`drain_samples`/overruns) for machines without a sound card, and a
+  bounded lock-free command queue between the control thread and the render
+  side. The vendored miniaudio's silent null backend is deliberately disabled,
+  so "no device" is reported, not hidden. `demo2d --audio` plays a generated
+  blip on every movement edge (with an explicit offline fallback); streaming,
+  DSP effects, and 3D spatialization remain unimplemented. See
+  `docs/audio.md` and ADR 0014.
+- `mikan-assets`: `SoundData`, a strict WAV decoder — RIFF/WAVE little-endian
+  PCM 8/16/24/32-bit and IEEE float 32/64-bit, mono or stereo, 8 000–192 000
+  Hz, `WAVE_FORMAT_EXTENSIBLE` with the standard GUIDs, unknown chunks
+  skipped with padding honored, a `2^24`-frame cap with a fallible
+  reservation, and a specific error for every rejection with no partial
+  decode.
+- `scripts/bench_audio.sh`: times the mixer through the safe API on the
+  offline backend (1/16/64 voices at pitch 1.0 and 64 at pitch 1.25),
+  reporting ns per output frame against the 20 833 ns realtime budget at
+  48 kHz; the recorded worst case uses under 1 % of it.
+- `scripts/verify_audio.sh`: end-to-end X11 verification of the `--audio`
+  lane — backend selection (device or the offline fallback), the blip decoded
+  to the generator's 5760 frames, exactly one voice per movement edge at the
+  right pitch, matching shutdown counters, zero offline overruns, and a clean
+  `Escape` exit. Wired into `scripts/verify.sh` and the CI smoke job.
+- `games/demo2d/assets/blip.wav`: a deterministic 120 ms mono 48 kHz 16-bit
+  sweep produced by `scripts/generate_assets.py` and covered by its `--check`
+  mode.
 - `mikan-input-sys` (C device backend and C++ action runtime) and safe
   `mikan-input`: ordered platform device events, keyboard and mouse bindings,
   prioritized contexts, action edge/repeat/value states, and focus-loss

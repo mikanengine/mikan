@@ -128,6 +128,13 @@ pub struct Cli {
     /// raw [`InputState`](mikan::InputState) queries, demonstrating the
     /// native action-mapping lane end to end.
     pub actions: bool,
+    /// Play the demo's blip through the audio system (`--audio`).
+    ///
+    /// Opens the default output device and falls back, with a warning, to the
+    /// deterministic offline backend when no device is available; the demo
+    /// then still exercises the full mixer path, which is what makes the
+    /// audio verification runnable on a machine without a sound card.
+    pub audio: bool,
 }
 
 impl Default for Cli {
@@ -148,6 +155,7 @@ impl Default for Cli {
             script: PathBuf::from(DEFAULT_SCRIPT),
             sprites: None,
             actions: false,
+            audio: false,
         }
     }
 }
@@ -228,6 +236,12 @@ impl Cli {
                         return Err(CliError::DuplicateArgument(argument));
                     }
                     cli.actions = true;
+                }
+                "--audio" => {
+                    if cli.audio {
+                        return Err(CliError::DuplicateArgument(argument));
+                    }
+                    cli.audio = true;
                 }
                 "--no-vsync" => {
                     if no_vsync {
@@ -463,6 +477,8 @@ OPTIONS:
     --sprites <N>         Sprite count of the stress scene (default 10000)
     --actions             Read controls through the action-mapping pipeline
                           (contexts + bindings instead of raw key queries)
+    --audio               Play a blip when movement starts, through the audio
+                          system (device, or the offline fallback)
     -h, --help            Print this help
 
 SCENES:
@@ -539,6 +555,22 @@ mod tests {
         let cli = parse(&["--capture", "shot.ppm", "--stats"]).expect("valid");
         assert_eq!(cli.capture, Some(PathBuf::from("shot.ppm")));
         assert!(cli.stats);
+    }
+
+    #[test]
+    fn the_action_and_audio_lanes_are_opt_in() {
+        let cli = parse(&[]).expect("valid");
+        assert!(!cli.actions, "the raw-key lane is the default");
+        assert!(!cli.audio, "audio is off unless requested");
+
+        let cli = parse(&["--actions", "--audio"]).expect("valid");
+        assert!(cli.actions);
+        assert!(cli.audio);
+
+        assert_eq!(
+            parse(&["--audio", "--audio"]),
+            Err(CliError::DuplicateArgument("--audio".to_string()))
+        );
     }
 
     #[test]

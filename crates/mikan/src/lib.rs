@@ -9,6 +9,10 @@
 //! - every window resize is forwarded to the renderer before the game sees it,
 //! - frame submission goes through [`Engine::render_frame`], the only operation
 //!   that needs mutable access to the renderer,
+//! - the audio system is owned by the game, not the engine lifecycle:
+//!   [`AudioSystem`] opens a device or the explicit offline fallback because a
+//!   machine may have no output device, and only the game knows what to do
+//!   about that,
 //! - engine failures and application failures travel through one error channel:
 //!   [`run`] returns [`PlatformError`].
 //!
@@ -16,9 +20,9 @@
 //! window lifecycle remain in [`mikan_platform`], driven by the same runner an
 //! application can still use directly through [`mikan_platform::App`]; the
 //! engine crates stay reachable as [`mikan_core`], [`mikan_platform`],
-//! [`mikan_render`], [`mikan_assets`], [`mikan_ecs`], [`mikan_collision`],
-//! [`mikan_scene`], and [`mikan_script`] for anything this crate does not
-//! re-export.
+//! [`mikan_render`], [`mikan_assets`], [`mikan_audio`], [`mikan_ecs`],
+//! [`mikan_collision`], [`mikan_scene`], and [`mikan_script`] for anything this
+//! crate does not re-export.
 //!
 //! # Example
 //!
@@ -80,6 +84,7 @@ pub use crate::runner::run;
 // The layers stay reachable for anything the curated re-exports below do not
 // cover.
 pub use mikan_assets;
+pub use mikan_audio;
 pub use mikan_collision;
 pub use mikan_core;
 pub use mikan_ecs;
@@ -93,6 +98,10 @@ pub use mikan_script;
 // vocabulary of a frame, the platform context, asset loading, entity storage,
 // collision queries, gameplay scripting, and the renderer entry points.
 pub use mikan_assets::{Image, ImageError, SheetError, SheetFrame, SpriteSheet};
+pub use mikan_audio::{
+    AudioError, AudioStats, AudioSystem, Bus, PlaySettings, PlaybackState, Sound, SoundData,
+    SoundError, Voice, VoiceStatus,
+};
 pub use mikan_collision::{Aabb, Broadphase, Contact, Pair, contacts};
 pub use mikan_core::{Camera2d, Color, EngineConfig, FrameOutcome, Time, init_logging};
 pub use mikan_ecs::{DeadEntity, Entity, Schedule, World};

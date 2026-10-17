@@ -1,6 +1,6 @@
 //! CPU-side asset loading for Mikan.
 //!
-//! Two things live here, both deliberately free of GPU code:
+//! Three things live here, all deliberately free of GPU code:
 //!
 //! - [`image`]: PNG files decoded to the engine's canonical RGBA8
 //!   representation ([`Image`]), with every PNG color type normalized, bounded
@@ -8,12 +8,16 @@
 //! - [`sheet`]: sprite-sheet metadata, parsed from the documented subset of
 //!   Aseprite's JSON export ([`SpriteSheet`]), validated and converted to the
 //!   texture-coordinate rectangles the renderer samples.
+//! - [`sound`]: WAV files decoded to interleaved f32 samples ([`SoundData`]),
+//!   covering the small format set the mixer supports, with the same bounded
+//!   allocations and descriptive errors.
 //!
-//! The split between this crate and `mikan-render` is deliberate: decoding a
-//! PNG is CPU work with no window and no device, so it is testable and usable
-//! without either. The render layer takes the bytes from an [`Image`] and
-//! uploads them; the asset layer never talks to a GPU, and nothing here can
-//! fail because a device is missing.
+//! The split between this crate and its consumers is deliberate: decoding a
+//! PNG or a WAV is CPU work with no window, no device, and no audio hardware,
+//! so it is testable and usable without any of them. The render layer takes
+//! the bytes from an [`Image`] and uploads them; the audio system takes the
+//! samples from a [`SoundData`] and copies them into the mixer. Nothing here
+//! can fail because a GPU or a sound card is missing.
 //!
 //! # Example
 //!
@@ -38,6 +42,8 @@
 
 pub mod image;
 pub mod sheet;
+pub mod sound;
 
 pub use image::{Image, ImageError, MAX_IMAGE_DIMENSION};
 pub use sheet::{SheetError, SheetFrame, SpriteSheet};
+pub use sound::{MAX_SOUND_FRAMES, SoundData, SoundError};

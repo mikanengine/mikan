@@ -43,6 +43,9 @@ if command -v xvfb-run >/dev/null 2>&1; then
         echo "==> action input verification: C backend and C++ runtime under Xvfb"
         RUST_LOG="${RUST_LOG:-info}" xvfb-run -a bash scripts/verify_input_actions.sh
 
+        echo "==> audio verification: the mixer, device or offline, under Xvfb"
+        RUST_LOG="${RUST_LOG:-info}" xvfb-run -a bash scripts/verify_audio.sh
+
         echo "==> camera verification: follow camera and zoom under Xvfb"
         RUST_LOG="${RUST_LOG:-info}" xvfb-run -a bash scripts/verify_camera.sh
 

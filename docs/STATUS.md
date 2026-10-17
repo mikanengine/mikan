@@ -342,12 +342,104 @@ Mikan's own (ADR 0013):
   same log line as the raw lane. Wired into `scripts/verify.sh` and the CI
   smoke job.
 
+## Milestone: the audio system (WAV assets, a miniaudio-backed device, a C++ mixer) — complete (owner-directed roadmap amendment)
+
+The layer that turns decoded sample data into sound on a device and into
+deterministic blocks everywhere else. The roadmap did not define audio as
+Phase 9; the project owner directed the milestone, so it arrives through ADR
+0014 the same way Luau scripting did through ADR 0011. It is the fourth
+first-party native module and the first one whose low-level C layer owns an
+operating-system resource (an output device) rather than arithmetic over
+caller-owned data:
+
+- **`mikan-audio-sys`**, the fourth crate allowed to use `unsafe`: a C device
+  backend (`src/audio_backend.c` — the miniaudio context and device, the
+  realtime output callback, the deterministic offline ring with
+  `pump`/`read_s16`/overruns, and compiler-atomic helpers because the C99
+  sources cannot use C11 atomics) next to a hand-written C++ mixer runtime
+  (`src/audio_runtime.cpp` — 256 sound slots and 64 voices in fixed pools, f32
+  stereo mixing with linear-interpolation resampling, bus/master gain atoms, a
+  256-command SPSC queue drained at block boundaries, generation-checked sound
+  *and* voice handles, and two-phase sound removal that stops orphaned voices).
+  The two layers cross exactly one function (`mikan_audio_runtime_render`) and
+  share no types; warnings-as-errors and `-fno-exceptions -fno-rtti` come from
+  the same `build.rs` discipline as the earlier modules.
+- **Vendored miniaudio 0.11.25** (`third_party/miniaudio/miniaudio.h`, SHA-256
+  recorded next to it) — the "existing library consumed on its own terms" case
+  of `docs/ffi.md`. Its silent "null" backend is **disabled in the vendored
+  config**: a machine with no device must report `NO_DEVICE` and let the caller
+  choose the offline backend, never pretend to play.
+- **`mikan-audio`**, the safe face (no `unsafe`): `AudioSystem` (device via
+  `new_device`, deterministic offline via `new_offline`; `update()` is a no-op
+  on devices and one pump + `collect` offline), `Sound`/`Voice`
+  (generation-checked copyable handles), `PlaySettings`, `Bus {Sfx, Music}`,
+  and `AudioError` mapping every native status
+  (`NoDevice/DeviceError/InvalidSampleRate/InvalidArgument/Unsupported/
+  Capacity/NotFound/Busy/OutOfMemory/OfflineOnly/Asset`). `AudioSystem` is
+  deliberately neither `Send` nor `Sync`: the native contract is one control
+  thread plus the render side.
+- **`mikan-assets` grew the decoder**: `SoundData` + `decode_wav`/`load_wav`
+  over a strict RIFF/WAVE little-endian subset — PCM 8/16/24/32-bit and IEEE
+  float 32/64, mono/stereo, 8 000–192 000 Hz, `WAVE_FORMAT_EXTENSIBLE` with the
+  standard GUIDs, unknown chunks skipped with padding honored, a `2^24`-frame
+  cap with a fallible reservation, and a specific error for every rejection
+  (ADPCM, >2 channels, 12/20-bit layouts, truncated or inconsistent chunks)
+  with **no partial decode** ever returned.
+- **Cross-checks are tests, not prose**: the C++ mixer's output is compared
+  **bit for bit** in the s16 domain against an independent Rust mirror in
+  `mikan-audio-sys::reference`, on exact dyadic inputs, so any arithmetic
+  divergence is detectable; the backend, the runtime, and the raw FFI each
+  have their own suites, and the safe crate's tests run on the offline backend
+  and on the device path's documented `NO_DEVICE` outcome. No test requires a
+  sound card.
+- **The demo integrates it**: `demo2d --audio` opens the device and falls back
+  to the offline backend with an explicit warning when it cannot start, loads
+  `assets/blip.wav` through the real pipeline, plays it on every edge from
+  standing to moving (pitch 1.25 up, 0.75 down, 1.0 otherwise), drains the
+  offline ring once per displayed frame, and summarizes at shutdown:
+  `audio: {plays} plays, {started} voices started, {finished} finished,
+  {blocks} blocks mixed, {overruns} overruns, backend {name}`.
+- **The blip is a generated asset**: `scripts/generate_assets.py` now writes
+  `blip.wav` (5760 frames, 48 kHz, mono, 16-bit: a 1320→660 Hz linear sweep
+  with a 4 ms attack and a quadratic fade) deterministically, and
+  `--check` covers it like the PNGs and the sheet JSON.
+- **The measurement is honest**: `scripts/bench_audio.sh` times the mixer
+  through the safe API on the offline backend — `update()` + a full
+  `drain_samples()` per block — with 16 timed runs over 4096 × 1024-frame
+  blocks after 3 warm-ups. Recorded on this machine (Intel Core i3-N305, 8
+  threads, release mode, `artifacts/bench/audio_4096.log`): **12.2 ns/frame**
+  with 1 looping voice, **62.6** with 16, **198.8** with the full 64-voice
+  pool, and **192.4** with 64 voices at pitch 1.25 (the resampling path). The
+  realtime budget at 48 kHz is 20 833 ns/frame, so even the worst case the
+  pool allows uses under 1 % of one core and runs 105× faster than realtime.
+  No speedup over a Rust baseline is claimed (ADR 0014: the driver is
+  architectural).
+- **The decision is explicit**: C owns the device foundation (contexts,
+  buffers, the output callback, the offline ring) and C++ owns the playback
+  runtime and mixer state machine (ADR 0014) — the same split of duties as
+  collision, scene, and input.
+- **End-to-end verification**: `scripts/verify_audio.sh` — the lane starts and
+  logs its backend, `blip.wav` decodes as 5760 frames at 48 kHz mono, `D` then
+  `W` start exactly one voice each with the second at the up pitch (`#1 at
+  pitch 1.00`, `#2 at pitch 1.25`), both voices finish, the offline ring
+  reports 0 overruns, Escape quits with status 0, a second run with one key
+  press reports exactly one play, and any `audio: could not` line fails the
+  run. Wired into `scripts/verify.sh` and the CI smoke job. Local run:
+  `backend offline: 2 plays, 2 started, 2 finished, 425 blocks mixed, 0
+  overruns`, then `1 plays, 1 voices started`.
+- **Valgrind: not yet run.** This machine has no Valgrind and installing it
+  needs interactive authorization, so `docs/STATUS.md` records the exact
+  command and the pending status instead of a result — the one item of the
+  `docs/ffi.md` checklist this milestone does not close yet.
+
 ## What is implemented
 
 | Area | What exists | Coverage |
 | --- | --- | --- |
 | `mikan-core` | `EngineConfig` + validation, `Color`, `Time` (clamped delta, zero first tick), `FixedTimestep` (bounded catch-up, interpolation alpha), `FrameOutcome`, `Camera2d` (position, zoom, `world_to_screen`, sanitizing `effective_zoom`, `pixel_space`, `pixel_perfect` integer zoom + snap, `pixel_perfect_scale`, `snap_to_physical_pixels`), `UvRect` (normalized region, collapsible half-texel `inset`), one-shot `init_logging` | 32 unit tests |
-| `mikan-assets` | `Image` (PNG → RGBA8, all color types normalized, `MAX_IMAGE_DIMENSION` + checked allocation, `ImageError`), `SpriteSheet`/`SheetFrame` (Aseprite JSON subset, `meta.image` resolution, duplicate detection via a custom serde visitor, geometry/pivot validation, rotated/trimmed rejection, inset `uv`, `center_for_pivot`), `SheetError` | 40 unit tests, 1 doc test |
+| `mikan-assets` | `Image` (PNG → RGBA8, all color types normalized, `MAX_IMAGE_DIMENSION` + checked allocation, `ImageError`), `SpriteSheet`/`SheetFrame` (Aseprite JSON subset, `meta.image` resolution, duplicate detection via a custom serde visitor, geometry/pivot validation, rotated/trimmed rejection, inset `uv`, `center_for_pivot`), `SheetError`, `SoundData` + strict WAV decoding (`decode_wav`/`load_wav`, PCM 8/16/24/32 + float 32/64, mono/stereo, 8–192 kHz, `WAVE_FORMAT_EXTENSIBLE`, a `2^24`-frame cap, no partial decodes, `SoundError`) | 59 unit tests, 1 doc test |
+| `mikan-audio-sys` | the C device backend (`mikan_audio_backend`: miniaudio context/device init, the realtime output callback wired to the runtime, the deterministic offline ring with `pump`/`read_s16`/overruns, atomic helpers for C99) and the hand-written C++ mixer (`mikan_audio_runtime`: 256 sound slots, 64 voices, f32 stereo mixing with linear-interpolation resampling, bus/master gain atoms, a 256-command SPSC queue drained at block boundaries, generation-checked sound and voice handles, two-phase sound removal); vendored miniaudio 0.11.25 with its hash recorded and the null backend disabled; warnings-as-errors and `-fno-exceptions -fno-rtti` `build.rs`; the fourth crate allowed `unsafe` (override and reason recorded in its crate root) | 24 integration tests (6 backend, 10 runtime, 3 raw FFI, 5 bit-for-bit cross-checks against the Rust reference) |
+| `mikan-audio` | `AudioSystem` (device via `new_device`, deterministic offline via `new_offline`, `update()` a no-op on devices), `Sound`/`Voice` generation-checked handles, `PlaySettings`/`Bus`, `load_wav` through the asset pipeline, `drain_samples`/`overruns` (offline-only, enforced), and `AudioError` mapping every native status; no `unsafe`, not `Send`/`Sync` by contract | 8 unit tests, 1 doc test |
 | `mikan-ecs` | `Entity` (generational handle, `Display` `{index}v{generation}`, LIFO slot reuse, stale-handle rejection), `World` (insertion-ordered sparse-set storage per component type, typed resources, `iter`/`iter_mut`/`iter2`/`iter2_mut`, `component_count`, `entity_count`, `Debug`), `Schedule` (named systems once each in registration order, `names`/`len`/`clear`), `DeadEntity` | 42 unit tests, 5 integration tests (determinism), 4 doc tests |
 | `mikan-collision-sys` | the C99 narrow-phase kernel (`mikan_contacts` over plain `#[repr(C)]` data, warnings-as-errors `build.rs`), the raw binding with `# Safety` docs, and a safe batch wrapper with debug assertions on pair indices; one of the two crates allowed `unsafe` (override and reason recorded in its crate root) | 7 integration tests (kernel semantics, boundary and degenerate cases, index validation) |
 | `mikan-collision` | `Aabb`/`Pair`/`Contact` with documented semantics, uniform-grid `Broadphase` (sorted, deduplicated, deterministic output), `contacts`, and `reference` — the Rust oracle and benchmark baseline, cross-checked bit for bit (including a randomized 256-box scene stepped 8 × 20,000 times) | 6 broad-phase integration tests, 3 cross-check integration tests, 2 doc tests |
@@ -357,9 +449,9 @@ Mikan's own (ADR 0013):
 | `mikan-platform` | `App` lifecycle trait, `AppContext` (input borrowed `&` for the raw lane, `&mut` for the event log), `InputState` (held state, press/release edges, cursor delta, focus release), the per-frame `DeviceEvent` log (`take_events` drain, wheel normalization, bounded drop-and-count), `winit` runner with occlusion/suspension-aware waiting | 14 unit tests, 1 doc test |
 | `mikan-input-sys` | the C device backend (`mikan_input_backend`: canonical events over USB HID usage IDs, raw device state, press/release/repeat normalization, move/wheel coalescing, synthetic releases on focus loss, bounded buffer) and the hand-written C++ action runtime (`mikan_input_runtime`: prioritized contexts, per-event arbitration, action state machines); warnings-as-errors and `-fno-exceptions -fno-rtti` `build.rs`; the third crate allowed `unsafe` (override and reason recorded in its crate root) | 4 unit tests, 29 integration tests (backend semantics, runtime behavior, error paths, bit-exact cross-check against the Rust normalizer) |
 | `mikan-input` | `InputSystem` (owns backend + runtime, translates `DeviceEvent`s, maps statuses to `InputError`), `ActionId`/`ContextId`, `Binding`/`WheelAxis`, the winit → HID code `map`, and `reference` — the independent Rust normalizer oracle, cross-checked bit for bit | 3 unit tests (code/button mapping), 16 integration tests (edges, arbitration, wheel values, focus, lifecycle), 1 doc test |
-| `mikan` | the `Game` lifecycle over the platform `App` (renderer created before `init`, resizes forwarded before the game sees them, `shutdown` iff `init` ran), the `Engine` handle (`AppContext` + `&Renderer` + `render_frame`), labeled renderer-startup failures, curated re-exports of all nine engine crates (including `mikan_ecs`, `mikan_collision`, `mikan_scene`, `mikan_script`, and `mikan_input` with their common types) | 3 unit tests, 2 doc tests |
+| `mikan` | the `Game` lifecycle over the platform `App` (renderer created before `init`, resizes forwarded before the game sees them, `shutdown` iff `init` ran), the `Engine` handle (`AppContext` + `&Renderer` + `render_frame`), labeled renderer-startup failures, curated re-exports of all ten engine crates (including `mikan_ecs`, `mikan_collision`, `mikan_scene`, `mikan_script`, `mikan_input`, and `mikan_audio` with their common types) | 3 unit tests, 2 doc tests |
 | `mikan-render` | `wgpu` instance/adapter/device/queue/surface, format/alpha/present-mode selection, explicit handling of every swap chain state, resize (including zero-sized), device-lost reporting, instanced sprite pipeline (flat or textured, per-sprite rotation, tint, alpha, linear/nearest sampling as a batch key), texture upload with declared encoding (`Linear`/`Srgb`, validated), camera view/projection matrix (including pixel-perfect), `FrameStats { sprites, batches, draw_calls }`, RGBA8 capture readback | 27 unit tests, 1 doc test |
-| `games/demo2d` | built on the `mikan` facade: CLI (`--frames`, `--capture`, `--stats`, `--timeout`, `--scene`, `--sampler`, `--pixel-perfect`, `--assets`, `--size`, `--camera`, `--zoom`, `--no-vsync`, `--sprites`, `--script`, `--actions`, `--help`), four scenes, asset loading/upload/validation, the classic scene as a `mikan-ecs` world (player plus three static collision blocks, `collide` resolution, five ordered systems, interpolated rendering), the hierarchy scene as a `mikan-scene` world (sun, planets, moon, spin, deferred despawn), a Luau gameplay script driving movement (load errors fatal, runtime errors logged once with an idle fallback), the `--actions` lane (an `ActionMapping` over `mikan-input`: global Escape-quit context above a WASD/arrows/`F`/wheel gameplay context, the shutdown summary `{fixed} fixed steps, {moved} moved, {wheel} wheel ticks`), PPM writer, frame-time and draw statistics | 55 unit tests |
+| `games/demo2d` | built on the `mikan` facade: CLI (`--frames`, `--capture`, `--stats`, `--timeout`, `--scene`, `--sampler`, `--pixel-perfect`, `--assets`, `--size`, `--camera`, `--zoom`, `--no-vsync`, `--sprites`, `--script`, `--actions`, `--audio`, `--help`), four scenes, asset loading/upload/validation, the classic scene as a `mikan-ecs` world (player plus three static collision blocks, `collide` resolution, five ordered systems, interpolated rendering), the hierarchy scene as a `mikan-scene` world (sun, planets, moon, spin, deferred despawn), a Luau gameplay script driving movement (load errors fatal, runtime errors logged once with an idle fallback), the `--actions` lane (an `ActionMapping` over `mikan-input`: global Escape-quit context above a WASD/arrows/`F`/wheel gameplay context, the shutdown summary `{fixed} fixed steps, {moved} moved, {wheel} wheel ticks`), the `--audio` lane (device with an explicit offline fallback, `blip.wav` through the asset pipeline, a blip on every movement edge with pitch following the vertical direction, a drain per displayed frame, and the shutdown summary `{plays} plays, … overruns, backend {name}`), PPM writer, frame-time and draw statistics | 56 unit tests |
 
 ## Verification: build and tests (this revision, local)
 
@@ -367,10 +459,10 @@ Mikan's own (ADR 0013):
 | --- | --- |
 | `cargo fmt --all -- --check` | pass |
 | `cargo check --workspace --all-targets` | pass |
-| `cargo test --workspace` | **366 pass, 0 fail** — 261 unit tests (55 demo2d, 42 mikan-ecs, 40 mikan-assets, 32 mikan-core, 27 mikan-render, 18 mikan-script, 17 mikan-scene, 14 mikan-platform, 6 mikan-scene-sys, 4 mikan-input-sys, 3 mikan, 3 mikan-input), 89 integration tests (29 mikan-input-sys — 12 backend, 15 runtime, 2 cross-check — 16 mikan-input, 15 mikan-scene — 11 scene, 4 cross-check — 9 mikan-collision — 6 broad-phase, 3 cross-check — 8 mikan-scene-sys, 7 mikan-collision-sys, 5 mikan-ecs determinism), and 16 doc tests (4 mikan-scene, 4 mikan-ecs, 2 mikan, 2 mikan-collision, 1 mikan-assets, 1 mikan-input, 1 mikan-platform, 1 mikan-render) |
+| `cargo test --workspace` | **421 pass, 0 fail** — 291 unit tests (60 mikan-assets, 56 demo2d, 42 mikan-ecs, 32 mikan-core, 27 mikan-render, 18 mikan-script, 17 mikan-scene, 14 mikan-platform, 9 mikan-audio, 6 mikan-scene-sys, 4 mikan-input-sys, 3 mikan, 3 mikan-input), 113 integration tests (29 mikan-input-sys — 12 backend, 15 runtime, 2 cross-check — 24 mikan-audio-sys — 6 backend, 10 runtime, 3 raw FFI, 5 cross-check — 16 mikan-input, 15 mikan-scene — 11 scene, 4 cross-check — 9 mikan-collision — 6 broad-phase, 3 cross-check — 8 mikan-scene-sys, 7 mikan-collision-sys, 5 mikan-ecs determinism), and 17 doc tests (4 mikan-scene, 4 mikan-ecs, 2 mikan, 2 mikan-collision, 1 mikan-assets, 1 mikan-audio, 1 mikan-input, 1 mikan-platform, 1 mikan-render) |
 | `cargo clippy --workspace --all-targets -- -D warnings` | pass |
 | `cargo build --workspace --release` | pass |
-| `python3 scripts/generate_assets.py --check` | pass: atlas.png, star.png, atlas.json all match the generator |
+| `python3 scripts/generate_assets.py --check` | pass: atlas.png, star.png, atlas.json, blip.wav all match the generator |
 
 `./scripts/verify.sh` runs all of the above plus the runtime checks below.
 
@@ -390,6 +482,9 @@ format `Bgra8UnormSrgb`.
 | Action-mapping movement | `xvfb-run -a bash scripts/verify_input_actions.sh` | holding `D` for 1 s under `--actions` moved the square through action state to the 912-pixel wall `[912, 300]` |
 | Action-mapping wheel | as above | two `click 4` wheel notches appear in the shutdown summary as `actions: {fixed} fixed steps, {moved} moved, {wheel} wheel ticks` with wheel ticks ≥ 2 |
 | Action-mapping quit | as above | a tapped `Escape` exits 0 with the same `escape pressed` log line as the raw lane, the log shows `input: action mapping active`, and no frame-budget timeout fires |
+| Audio lane startup | `xvfb-run -a bash scripts/verify_audio.sh` | this machine has no sound card, so the lane logs `audio: no usable output device (…); using the offline backend at 48000 Hz, block 1024 frames`, then `audio: games/demo2d/assets/blip.wav -> 5760 frames at 48000 Hz, 1 channel(s)` and `audio: the blip plays when movement starts (pitch follows up/down)` |
+| Audio playback edges | as above | holding `D` then `W` (0.6 s each, with a release between): `audio: blip #1 at pitch 1.00` and `audio: blip #2 at pitch 1.25` |
+| Audio counters and clean exit | as above | the shutdown summary reports `backend offline: 2 plays, 2 started, 2 finished, 425 blocks mixed, 0 overruns`; Escape exits 0 with `escape pressed`; no `audio: could not` line in the log; a second run with one `A` press reports exactly `1 plays, 1 voices started` |
 | ECS schedule (startup) | `xvfb-run -a bash scripts/verify_ecs.sh` | startup log: `ecs: 4 entities, 11 components, systems: snapshot, input, movement, collide, clamp` |
 | ECS fixed-step integration | as above | holding `D` for ~0.5 s: `moved steps: 65 of 175 fixed steps; square at [708.0, 300.0]` — 480 + 65 × 3.5 = 707.5 rounds to 708, so every moved step was exactly one 3.5 px fixed step |
 | ECS no-input run | as above | no input for 120 frames: `0 moved steps` and `square at [480, 300]` (the fixed-step count varies with run speed); nothing moves without input |
@@ -555,6 +650,43 @@ exit 0; `ERROR SUMMARY: 0 errors from 0 contexts (suppressed: 0 from 0)`;
 benchmarks report). This is the memory-tool record `docs/ffi.md` requires for
 a native module.
 
+## Verification: the audio mixer benchmark (this machine, CPU only)
+
+`bash scripts/bench_audio.sh` runs the mixer (the C++ runtime through
+`mikan-audio`'s safe API) on the deterministic **offline backend**, 16 timed
+runs over 4096 blocks × 1024 frames (about 87 s of audio per run) after 3
+warm-ups, in release mode, measuring `update()` + a full `drain_samples()` per
+block: mix, hard clip, ring store, and the s16 conversion. The result is
+recorded in `artifacts/bench/audio_4096.log`:
+
+| Row | ns/frame | frames/s | vs. realtime |
+| --- | --- | --- | --- |
+| 1 looping voice, pitch 1.0 | 12.2 | ≈82.3M | 1714× |
+| 16 looping voices, pitch 1.0 | 62.6 | ≈16.0M | 333× |
+| 64 looping voices, pitch 1.0 (full pool) | 198.8 | ≈5.0M | 105× |
+| 64 looping voices, pitch 1.25 (resampling) | 192.4 | ≈5.2M | 108× |
+
+The honest reading: **no speedup over a Rust baseline is claimed or needed** —
+the driver for this module is the architecture directive (ADR 0014), and the
+numbers answer the practical question instead: the worst case the pool allows
+(64 summed, clipping voices) costs under 1 % of one core's realtime budget at
+48 kHz (20 833 ns/frame), so the audio thread has three orders of magnitude of
+headroom on this machine. The measured region includes the ring store and the
+s16 conversion, which on the device path correspond to the backend's copy,
+so the callback is not slower than the recorded row.
+
+Valgrind (memcheck) has **not** been run for this module yet: this machine has
+no `valgrind`, and installing it requires interactive `sudo` (unavailable in
+this environment). The exact command to run, kept here so the record can be
+completed later:
+
+```
+valgrind --leak-check=full --error-exitcode=1 --log-file=artifacts/mem/audio_bench_valgrind.log target/release/examples/bench_audio 2048
+```
+
+Until that run happens, this milestone does not claim the Valgrind item of
+`docs/ffi.md`'s checklist — the pending status is the honest record.
+
 ## Verification: CI
 
 **The full pushed history is covered, and every milestone's final commit is
@@ -577,15 +709,26 @@ input commit; `cargo fmt --check` failed, fixed in `23be31e`). Phase 5's
 facade-milestone state `9c3e98b` remains green in run
 [38753924627](https://github.com/neverseeyouagainnnnn/mikan/actions/runs/38753924627).
 
+**This revision (the audio milestone) is unpushed, so no CI run covers it
+yet.** The workflow's smoke job now also runs
+`xvfb-run -a bash scripts/verify_audio.sh` (on the runners, which have no sound
+card, the lane exercises the documented `NO_DEVICE` fallback and the offline
+mixer path — the same one this machine verified locally), and the quality
+job's `cargo test --workspace` includes every new audio test plus
+`generate_assets.py --check` over the new `blip.wav`. The first push of this
+change set is the point at which those claims become CI-verified; until then
+they are local-run claims, listed as such above.
+
 ## Verification levels by platform (ADR 0005)
 
 | Platform | Level | Evidence |
 | --- | --- | --- |
-| Linux / X11 (software Vulkan) | **runtime-verified** | local smoke, input (raw lane and action-mapping lane), camera, ecs, collision, scripting, scene, showcase, stress, pixel-perfect, and asset-failure checks; the CI smoke job runs the same verifications (run 39025956812) |
-| Windows x86-64 | **compile-verified** for the latest milestone | CI `cargo check --workspace --all-targets` builds every crate, including the native modules, on windows-latest (run 39025956812) |
-| macOS (arm64) | **compile-verified** for the latest milestone | as above, on macos-latest (run 39025956812) |
+| Linux / X11 (software Vulkan) | **runtime-verified** | local smoke, input (raw lane and action-mapping lane), audio (device attempt + offline mixer, blip through the asset pipeline, counters), camera, ecs, collision, scripting, scene, showcase, stress, pixel-perfect, and asset-failure checks; the CI smoke job runs the same verifications plus `verify_audio.sh` (input-era runs 39029252348/39025956812; the audio run is pending the first push) |
+| Windows x86-64 | **compile-verified** for the pushed milestones | CI `cargo check --workspace --all-targets` builds every crate, including the native modules and vendored miniaudio, on windows-latest (run 39025956812 for the input milestone; the audio change set is unpushed) |
+| macOS (arm64) | **compile-verified** for the pushed milestones | as above, on macos-latest (run 39025956812 for the input milestone; the audio change set is unpushed) |
 | Linux / Wayland | not verified | path exists through `winit`; never exercised |
 | Hardware GPU / Windows / macOS runtime | not verified | no such machine in the verification environment |
+| Any machine with a real sound card | **not verified** | this machine has no ALSA/PulseAudio/JACK and no `/dev/snd`, so the device path has only been exercised to its documented `NO_DEVICE` outcome; the mixer it would run is the same one the offline backend runs |
 
 ## Known limitations
 
@@ -611,9 +754,10 @@ facade-milestone state `9c3e98b` remains green in run
   O(n) per component, two-component queries probe a sparse index per entry (no
   archetypes), and there are no query filters, change detection, events, or
   serialization. `iter2_mut::<A, A>` panics by design. None of the missing
-  pieces are stubbed. Physics (impulses, friction, gravity), audio, and 3D do
-  not exist and are not partially implemented; collision resolution (below) is
-  its own layer, not physics.
+  pieces are stubbed. Physics (impulses, friction, gravity) and 3D do not
+  exist and are not partially implemented; audio exists as its own layer
+  (ADR 0014, above) and collision resolution (below) is its own layer, not
+  physics.
 - **Collision scope:** axis-aligned boxes only — no rotation, circles, OBB/SAT,
   continuous collision, contact manifolds, friction, layers/masks, or impulse
   resolution. Overlaps are resolved by moving bodies out along the contact
@@ -638,6 +782,17 @@ facade-milestone state `9c3e98b` remains green in run
   `value` is `held ? 1.0 : 0.0` plus this step's wheel deltas, not an analog
   signal. The native C backend measures slower than the Rust oracle in the
   recorded benchmark, as recorded above; the guide is `docs/input.md`.
+- **Audio scope (ADR 0014):** fixed pools (256 sounds, 64 voices, a 256-command
+  queue) with named errors at every limit, one output format (f32 stereo at the
+  system's rate), and one decoded format family (the strict WAV subset above).
+  There is no streaming playback (a sound is copied into the mixer whole, so
+  the `2^24`-frame cap is also a memory consideration), no DSP effects, no
+  reverb, no 3D spatialization, no recording, and no second mixer rate. The
+  device path was exercised only to its `NO_DEVICE` outcome locally: no machine
+  with a real sound card has run it yet, and no Valgrind run covers the module
+  yet (exact command recorded above). `AudioSystem` is neither `Send` nor
+  `Sync` by contract; audio runs on the control thread, and games that want
+  otherwise own that decision explicitly. The guide is `docs/audio.md`.
 - **Scripting scope:** one script per engine, single-threaded, no hot reload
   (scripts load at startup). The 64 MiB limit bounds memory, not time: a long
   `mikan_step` still costs the frame it runs in. Luau numbers cross the
@@ -813,15 +968,22 @@ The Phase 8 input change set was committed as `773589e` (the bulk) and
 Ordered by intended value; each needs its own design note before implementation.
 
 1. **Asset pipeline depth** — atlas packing and hot reload on top of
-   `mikan-assets`.
-2. **Platform and hardware verification** — runtime-verify Windows and macOS
-   (and Wayland) per ADR 0005, and record a hardware-GPU run of the sprite
-   benchmark next to the `llvmpipe` numbers.
+   `mikan-assets`, plus a streaming audio path (the decoded-sound cap is the
+   first thing a long music track runs into; `docs/audio.md` documents the
+   entry point).
+2. **Audio depth, if the owner continues the line** — streaming voices, a
+   per-voice effect graph (filter/gain nodes), and a listener model for
+   spatialization. Each is a design note away; none is stubbed today.
+3. **Platform and hardware verification** — run `verify_audio.sh` and the
+   pending Valgrind command on a machine with a real sound card, runtime-verify
+   Windows and macOS (and Wayland) per ADR 0005, and record a hardware-GPU run
+   of the sprite benchmark next to the `llvmpipe` numbers.
 
 Native C/C++ modules are no longer deferred in principle: ADR 0010 (the C
 collision kernel), ADR 0011 (the vendored C++ Luau VM), ADR 0012 (the C
-transform kernel and Mikan's own C++ scene graph), and ADR 0013 (the C input
-backend and Mikan's own C++ action runtime) introduced the first four, each
-with its justification and honest measurements. Every further module must
-still clear `docs/ffi.md` (ADR 0004) — or arrive through an equally explicit ADR
-that states what changed, as ADR 0010 and ADR 0012 did.
+transform kernel and Mikan's own C++ scene graph), ADR 0013 (the C input
+backend and Mikan's own C++ action runtime), and ADR 0014 (the C audio device
+backend over vendored miniaudio and Mikan's own C++ mixer) introduced the first
+five, each with its justification and honest measurements. Every further module
+must still clear `docs/ffi.md` (ADR 0004) — or arrive through an equally
+explicit ADR that states what changed, as ADR 0010 and ADR 0012 did.

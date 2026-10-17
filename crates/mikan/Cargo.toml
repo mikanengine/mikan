@@ -14,6 +14,7 @@ workspace = true
 
 [dependencies]
 mikan-assets.workspace = true
+mikan-audio.workspace = true
 mikan-collision.workspace = true
 mikan-core.workspace = true
 mikan-ecs.workspace = true

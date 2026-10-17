@@ -15,8 +15,9 @@ a fixed-timestep simulation whose classic-scene player is an ECS entity driven
 by explicitly ordered systems and a Luau gameplay script, links entities into a
 scene transform hierarchy (a sun, planets, and a moon that orbit rigidly, with
 deferred despawn), resolves AABB collisions against the scene's static blocks,
-handles resize and every recoverable swap-chain condition, reports draw
-statistics, and exits cleanly.
+plays WAV sounds through a 64-voice mixer (a real output device when one exists,
+a deterministic offline backend otherwise), handles resize and every
+recoverable swap-chain condition, reports draw statistics, and exits cleanly.
 
 | Capability | State |
 | --- | --- |
@@ -24,6 +25,8 @@ statistics, and exits cleanly.
 | Fixed-timestep simulation with interpolation | implemented, unit-tested |
 | Keyboard/mouse state with press/release edges | implemented, unit-tested |
 | Action mapping with prioritized contexts over the native input backend | implemented, integration-tested |
+| WAV decoding (strict subset: PCM/float, mono/stereo) | implemented, unit-tested |
+| Audio mixing (`mikan-audio`): 64 voices, pitch, volume, loops, buses/master, C device backend + C++ mixer | implemented, runtime-verified (offline mixer; no sound card on this machine) |
 | Clamped frame timing | implemented, unit-tested |
 | `wgpu` device/surface management, resize, surface recovery | implemented, runtime-verified |
 | Clear color + sprites (flat or textured, one instanced draw call per texture/sampler run) | implemented, runtime-verified |
@@ -41,7 +44,7 @@ statistics, and exits cleanly.
 | Action mapping (`mikan-input`): contexts, priorities, per-action state, C device backend + C++ runtime | implemented, runtime-verified |
 | Frame statistics (sprites/batches/draw calls) and a sprite benchmark | implemented, measured |
 | Offscreen frame capture (PPM) for tests and tooling | implemented, runtime-verified |
-| 3D, audio, physics (impulses/friction beyond AABB resolution), hot reload | **not implemented** — see the roadmap |
+| 3D, physics (impulses/friction beyond AABB resolution), audio streaming/DSP, hot reload | **not implemented** — see the roadmap |
 
 ## Quick start
 
@@ -58,6 +61,7 @@ The demo opens a 960x600 window and loads its sprites from
 ```bash
 cargo run -p demo2d --release                          # classic: drive the square
 cargo run -p demo2d --release -- --actions             # same controls through the action-mapping system
+cargo run -p demo2d --release -- --audio               # a blip on every movement edge, through the mixer
 cargo run -p demo2d --release -- --scene hierarchy     # sun, orbiting planets, and a moon
 cargo run -p demo2d --release -- --scene showcase      # rotation, tint, alpha, samplers, PNG alpha
 cargo run -p demo2d --release -- --scene stress --sprites 10000   # 10,000-sprite benchmark scene
@@ -84,7 +88,9 @@ queue. `cargo run -p demo2d -- --help` lists every option; see
 [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md) for the full command reference,
 including headless smoke-test and benchmark modes. The action-input
 architecture, fixed-step semantics, supported devices, and gamepad limitation
-are documented in [`docs/input.md`](docs/input.md).
+are documented in [`docs/input.md`](docs/input.md); the audio architecture, the
+WAV subset, the offline backend, and the measured mixer cost are documented in
+[`docs/audio.md`](docs/audio.md).
 
 ## Workspace layout
 
@@ -99,11 +105,13 @@ crates/scene          scenes: transforms, the entity hierarchy, deferred despawn
 crates/scene-sys      the C transform kernel and the C++ scene graph (one of the unsafe crates)
 crates/input          action mapping: actions, prioritized contexts, per-action state (safe face)
 crates/input-sys      the C device backend and the C++ action runtime (one of the unsafe crates)
+crates/audio          audio: WAV sound data and the safe mixer API (safe face)
+crates/audio-sys      the C device backend over vendored miniaudio and the C++ mixer (one of the unsafe crates)
 crates/script         sandboxed Luau VM and the gameplay step contract
 crates/platform       window lifecycle, input state, application runner (winit)
 crates/render         device and swap chain management, sprites and textures, capture (wgpu)
 games/demo2d                playable 2D demo built on the engine runtime
-docs/                       architecture, development guide, FFI policy, sprite-sheet format, ECS, collision, scene, and scripting guides, ADRs
+docs/                       architecture, development guide, FFI policy, sprite-sheet format, ECS, collision, scene, input, audio, and scripting guides, ADRs
 ```
 
 Dependency direction is one-way and enforced by the manifests:
@@ -124,6 +132,7 @@ Dependency direction is one-way and enforced by the manifests:
 also under mikan:  mikan-collision (safe) --> mikan-collision-sys (C99 kernel)
                    mikan-scene (safe)     --> mikan-scene-sys (C kernel + C++ graph)
                    mikan-input (safe)     --> mikan-input-sys (C backend + C++ runtime)
+                   mikan-audio (safe)     --> mikan-audio-sys (C backend over miniaudio + C++ mixer)
                    mikan-script (mlua + vendored Luau VM, C++)
 ```
 
@@ -143,9 +152,10 @@ still meet directly in applications that wire the layers by hand. See
   `Time`, `FixedTimestep`, `FrameOutcome`, `Camera2d` (including the
   pixel-perfect constructor), `UvRect`, logging initialization.
 - **`mikan-assets`** — `Image` (PNG decoded to RGBA8 with limits and descriptive
-  errors) and `SpriteSheet` (named frames from a documented Aseprite JSON
-  subset, validated and converted to inset UV rectangles). No window, no
-  device.
+  errors), `SpriteSheet` (named frames from a documented Aseprite JSON subset,
+  validated and converted to inset UV rectangles), and `SoundData` (WAV decoded
+  from a documented strict subset: PCM 8/16/24/32 and float 32/64, mono/stereo,
+  8–192 kHz, with a frame cap and no partial decodes). No window, no device.
 - **`mikan-ecs`** — entities (generational handles that cannot go stale),
   components in insertion-ordered sparse sets, resources, and a schedule that
   runs named systems once each in registration order. No window, no device, no
@@ -174,6 +184,15 @@ still meet directly in applications that wire the layers by hand. See
   Rust `reference` normalizer is the bit-exact test oracle. The guide is
   [`docs/input.md`](docs/input.md); the decision and the honest
   (slower-than-Rust) measurement are in ADR 0013.
+- **`mikan-audio`** — audio playback: `AudioSystem` (a real output device or a
+  deterministic offline backend), `Sound`/`Voice` generation-checked handles,
+  `PlaySettings`/`Bus`, and offline `drain_samples`/`overruns` for headless
+  loops. The device backend is C (over vendored miniaudio, its silent null
+  backend deliberately disabled) and the mixer a hand-written C++ runtime with
+  fixed pools and a lock-free command queue (`mikan-audio-sys`, the other crate
+  allowed `unsafe`); a Rust `reference` mixer is the bit-exact test oracle. The
+  guide is [`docs/audio.md`](docs/audio.md); the decision and the measured
+  realtime-budget result are in ADR 0014 and `docs/STATUS.md`.
 - **`mikan-script`** — sandboxed gameplay scripting: a `ScriptEngine` that
   loads a Luau script and calls its global `mikan_step` once per fixed step,
   with engine-side validation (finite `f32`s, non-negative speed, over-long
@@ -199,6 +218,7 @@ still meet directly in applications that wire the layers by hand. See
 | [`docs/collision.md`](docs/collision.md) | The collision guide: broad phase, AABB semantics, the C kernel and its boundary, demo integration |
 | [`docs/scene.md`](docs/scene.md) | The scene guide: transforms, hierarchy invariants, scene update order, deferred despawn, the native boundary and its honest measurement |
 | [`docs/input.md`](docs/input.md) | The input guide: the event model, contexts and priorities, action states, the C/C++ boundary and its honest measurement |
+| [`docs/audio.md`](docs/audio.md) | The audio guide: the mixer and its limits, handles, the offline backend, the WAV subset, the measured realtime headroom |
 | [`docs/scripting.md`](docs/scripting.md) | The Luau guide: the step contract, validation, sandbox, failure semantics, demo integration |
 | [`docs/ffi.md`](docs/ffi.md) | Native code policy and boundary rules |
 | [`docs/STATUS.md`](docs/STATUS.md) | What is implemented, tested, and pending |
@@ -215,19 +235,26 @@ added the scene and entity transform hierarchy
 ([`docs/scene.md`](docs/scene.md), ADR 0012), whose topology is a hand-written
 C++ graph and whose composition is a C kernel. The input milestone then landed
 action mapping ([`docs/input.md`](docs/input.md), ADR 0013): a C device backend
-and a hand-written C++ action runtime behind one platform event log.
+and a hand-written C++ action runtime behind one platform event log. Phase 9
+landed audio ([`docs/audio.md`](docs/audio.md), ADR 0014 — another
+owner-directed amendment): a C device backend over vendored miniaudio and a
+hand-written C++ mixer, with a deterministic offline backend for machines (and
+CI runners) without a sound card.
 
 Next milestones, in order of intended value:
 
-1. Asset pipeline depth: atlas packing and hot reload on top of `mikan-assets`.
-2. Runtime verification on Windows, macOS, and Wayland (ADR 0005), and a
-   hardware-GPU measurement of the sprite benchmark.
+1. Asset pipeline depth: atlas packing and hot reload on top of `mikan-assets`,
+   plus a streaming audio path.
+2. Runtime verification on Windows, macOS, and Wayland (ADR 0005), a
+   hardware-GPU measurement of the sprite benchmark, and the first runs on a
+   machine with a real sound card (plus the pending Valgrind record).
 
 3D work is deliberately out of scope until the 2D foundation is stable. Native
 modules are no longer all deferred: ADR 0010 (the C99 collision kernel), ADR
 0011 (the vendored C++ Luau VM), ADR 0012 (the C transform kernel and the
-C++ scene graph), and ADR 0013 (the C input backend and C++ action runtime)
-introduced the first four, each with an explicit decision and
+C++ scene graph), ADR 0013 (the C input backend and C++ action runtime), and
+ADR 0014 (the C audio backend over vendored miniaudio and the C++ mixer)
+introduced the first five, each with an explicit decision and
 honest measurements per ADR 0004 and [`docs/ffi.md`](docs/ffi.md); ADRs 0006–0009
 record why the earlier milestones were Rust-only.
 

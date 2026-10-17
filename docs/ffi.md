@@ -5,10 +5,11 @@ code is allowed to enter the repository, how it must be structured, and what
 "done" means for such a module. It also states, unambiguously, what native code
 exists today.
 
-## Current status: four native modules
+## Current status: five native modules
 
 Native code entered the repository by explicit owner-directed architecture
-decision (ADR 0010, ADR 0011, ADR 0012, ADR 0013) rather than silently:
+decision (ADR 0010, ADR 0011, ADR 0012, ADR 0013, ADR 0014) rather than
+silently:
 
 1. **`crates/collision-sys` (C99)** — the collision narrow-phase kernel:
    one batch function, `mikan_contacts`, over plain `#[repr(C)]` data, with a
@@ -41,7 +42,23 @@ decision (ADR 0010, ADR 0011, ADR 0012, ADR 0013) rather than silently:
    performance grounds: the C backend measures slower than the Rust oracle in
    the recorded run, and no speedup is claimed — its driver is architectural
    (ADR 0013), the same as the scene module's.
-4. **The vendored Luau VM (C++)** — `mlua`'s `luau` + `vendored` features
+4. **`crates/audio-sys` (C and C++)** — the audio module: a C device backend
+   (`mikan_audio_backend`, the miniaudio context and device, the realtime
+   output callback, and the deterministic offline ring with its overrun
+   counter) next to a hand-written C++ mixer runtime (`mikan_audio_runtime`,
+   fixed sound/voice pools, f32 stereo mixing with linear-interpolation
+   resampling, bus and master gains, and a lock-free command queue between the
+   control thread and the render side), with a safe wrapper (`crates/audio`),
+   a warnings-as-errors build with `-fno-exceptions -fno-rtti` for C++, a
+   bit-for-bit cross-check against an independent Rust mixer mirror, and the
+   vendored miniaudio 0.11.25 (SHA-256 recorded in-tree) compiled as one C
+   translation unit. Also **not** adopted on performance grounds: the driver is
+   architectural (ADR 0014) — the measured rows answer "does the worst case fit
+   the realtime budget" (it uses under 1 % of it), not "is it faster than
+   Rust". This is the first module whose C layer owns an operating-system
+   resource and a second thread; both are documented in `mikan_audio.h` and
+   encoded in the wrapper's `!Send`/`!Sync` bounds.
+5. **The vendored Luau VM (C++)** — `mlua`'s `luau` + `vendored` features
    compile the pinned upstream Luau sources with the system C++ compiler when
    `mikan-script` is built (ADR 0011). It is third-party code consumed
    through `mlua`; Mikan writes no C++ glue for it, and the rules below apply
@@ -51,13 +68,14 @@ decision (ADR 0010, ADR 0011, ADR 0012, ADR 0013) rather than silently:
 Consequently, **a C compiler and a C++ compiler are build prerequisites** on
 every platform, documented in `docs/DEVELOPMENT.md`. The workspace still
 forbids `unsafe_code` crate-wide; the exceptions are `mikan-collision-sys`,
-`mikan-scene-sys`, and `mikan-input-sys`, whose crate roots record the
-overrides and their reasons.
+`mikan-scene-sys`, `mikan-input-sys`, and `mikan-audio-sys`, whose crate roots
+record the overrides and their reasons.
 
 The first-party C surface is the two batch kernels (the collision narrow phase
-and the transform compose) and the device backend; the hand-written C++ surface
-is the action runtime and the scene graph; and the third-party C++ surface is
-the vendored Luau VM. Nothing else links native code.
+and the transform compose), the device backend, and the audio device backend;
+the hand-written C++ surface is the action runtime, the scene graph, and the
+audio mixer; and the third-party C/C++ surface is the vendored Luau VM and the
+vendored miniaudio. Nothing else links native code.
 
 ## Why C and C++ were deferred, and what changed
 
@@ -82,8 +100,9 @@ architecture — Rust + C++ forming the engine core, C as the low-level
 foundation — is a requirement, not a long-term intention. ADR 0010 (the C
 collision kernel) and ADR 0011 (the vendored C++ Luau VM) record how that
 directive is honored; the scene milestone added ADR 0012 (a C transform kernel
-and Mikan's own C++ scene graph), and ADR 0013 assigns device normalization to
-C and action processing to C++. The policy below remains in force for every
+and Mikan's own C++ scene graph), ADR 0013 assigns device normalization to C
+and action processing to C++, and ADR 0014 assigns the audio device backend to
+C and the mixer runtime to C++. The policy below remains in force for every
 module proposed **on performance grounds**; a module introduced by an
 architecture decision instead must say so in its own ADR, report its
 measurements as measured (parity — or being slower — is a legitimate result,
@@ -161,7 +180,11 @@ A native module is considered only when **all** of the following hold:
   handle — while the arithmetic it calls is C. The input runtime in
   `crates/input-sys/src/input_runtime.cpp` owns action-state transitions and
   context arbitration as required by ADR 0013; it exposes only opaque handles,
-  plain event data, and status-code entry points to Rust.
+  plain event data, and status-code entry points to Rust. The audio mixer in
+  `crates/audio-sys/src/audio_runtime.cpp` owns voice lifecycle, mixing and
+  resampling, gain routing, and the control-thread/render-side command path as
+  required by ADR 0014; it exposes only opaque handles, plain sample data, and
+  status-code entry points, and the device resource beneath it is C.
 - **Both** must build with warnings-as-errors for the module's own sources and
   must not require exceptions or RTTI for C++. Vendored third-party sources are
   compiled by their own build system under their own flags; the rule binds the
@@ -192,10 +215,15 @@ A native module is "done" only when the following are all true:
   the command and result recorded in `docs/STATUS.md`;
 - `docs/ARCHITECTURE.md` describes where the module sits in the dependency graph.
 
-A module that cannot show all of this does not belong in this repository. Three
+A module that cannot show all of this does not belong in this repository. Four
 first-party modules have walked the whole path and their records are the worked
 examples: collision — design in `docs/collision.md`, decision in ADR 0010,
 benchmark and Valgrind results in `docs/STATUS.md`; the scene module — design
 in `docs/scene.md`, decision in ADR 0012, benchmark and Valgrind results in
-`docs/STATUS.md`; and the input module — design in `docs/input.md`, decision in
-ADR 0013, benchmark and Valgrind results in `docs/STATUS.md`.
+`docs/STATUS.md`; the input module — design in `docs/input.md`, decision in
+ADR 0013, benchmark and Valgrind results in `docs/STATUS.md`; and the audio
+module — design in `docs/audio.md`, decision in ADR 0014, benchmark results in
+`docs/STATUS.md`, with its Valgrind run recorded there as **pending** (this
+machine has no Valgrind and installing it needs interactive authorization) —
+the one checklist item the audio milestone leaves open, stated as pending
+rather than claimed.

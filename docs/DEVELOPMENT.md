@@ -11,11 +11,15 @@ How to build, test, run, and verify Mikan on your machine.
   installs them automatically on the first `cargo` invocation in this repository.
 - **A C compiler and a C++ compiler.** The collision kernel is C99
   (`crates/collision-sys`), the scene module has a C compose kernel and a C++
-  scene graph (`crates/scene-sys`), and the vendored Luau VM is C++
+  scene graph (`crates/scene-sys`), the audio module has a C device backend and
+  a C++ mixer (`crates/audio-sys`), and the vendored Luau VM is C++
   (`crates/script`) — all compiled as part of `cargo build`. On Debian
   and Ubuntu, `sudo apt-get install -y build-essential` (or `gcc g++`)
   covers it; on macOS, the Xcode Command Line Tools; on Windows, the MSVC
-  Build Tools that a normal Rust install already uses.
+  Build Tools that a normal Rust install already uses. **No system audio
+  library is required to build or to run the tests**: the device backend is a
+  vendored single-header miniaudio, and every test uses the offline backend,
+  which needs no device.
 - **A Vulkan, Metal, DirectX 12, or OpenGL ES capable GPU.**
   `wgpu` falls back through available backends automatically. If your machine has
   no hardware support, a software rasterizer also works (see below).
@@ -90,7 +94,9 @@ creates the renderer, forwards resizes, and translates errors; see
 
 The demo loads its sprites from `games/demo2d/assets` — an `atlas.png` with a
 committed `atlas.json` sprite sheet and a `star.png` with transparent corners —
-decoded by `mikan-assets` and uploaded as sRGB textures at startup. A missing,
+decoded by `mikan-assets` and uploaded as sRGB textures at startup, plus
+`blip.wav`, the sound the `--audio` lane plays through the same asset pipeline
+(decoded by `mikan-assets`'s WAV decoder and copied into the mixer). A missing,
 corrupt, or incomplete asset set stops the demo with a readable error before
 the first frame; `--assets DIR` loads a different directory. The files are
 generated (and checked in CI) by:
@@ -269,6 +275,25 @@ This verifies movement, wheel values, and the Escape press edge through the
 platform event log, native C backend, C++ action runtime, and demo lifecycle.
 The current device limits and gamepad extension path are documented in
 [`input.md`](input.md).
+
+### Verifying audio
+
+The `--audio` lane is verified end to end without requiring a sound card:
+
+```bash
+xvfb-run -a bash scripts/verify_audio.sh
+```
+
+The script starts the demo with `--audio`, waits for the lane to log its
+backend (the real device, or the offline fallback when none can start — which
+is every machine in CI), checks that `blip.wav` decoded to the generator's 5760
+frames at 48 kHz mono, holds `D` and then `W` and asserts that each produced
+exactly one voice — the second at the up pitch (`blip #2 at pitch 1.25`) — then
+taps `Escape` and checks the shutdown counters (`2 plays, 2 started, 2
+finished, …, 0 overruns`). Any `audio: could not` line fails the run, and a
+second run with one key press must report exactly one play. The mixer's limits,
+the offline backend, and the WAV subset are documented in
+[`audio.md`](audio.md).
 
 ### Verifying the 2D camera
 
@@ -476,6 +501,23 @@ time. The recorded result is that **the C backend is slower than the Rust
 oracle** and the full engine step stays under ≈40 ns/event; no speedup is
 claimed; see `docs/STATUS.md` for the numbers and ADR 0013 for why the module
 exists anyway.
+
+### Benchmarking the audio mixer
+
+```bash
+bash scripts/bench_audio.sh              # 4096 blocks x 1024 frames, 16 runs
+BLOCKS=1024 bash scripts/bench_audio.sh
+```
+
+Runs the mixer through `mikan-audio`'s safe API on the deterministic offline
+backend — `update()` plus a full `drain_samples()` per block, so the row is
+mix + clip + ring store + s16 conversion — over 1, 16, and 64 looping voices at
+pitch 1.0 and 64 at pitch 1.25, records ns/frame under `artifacts/bench/`, and
+checks the overrun counter stays zero. The realtime budget at 48 kHz is
+20 833 ns/frame; the recorded worst case (64 voices, the full pool) is 198.8
+ns/frame, so the mixer has ~100× headroom on this machine. No speedup over a
+Rust baseline is claimed; see `docs/STATUS.md` for the numbers and ADR 0014 for
+why the module exists anyway.
 
 ### Benchmarking the sprite pipeline
 
