@@ -557,29 +557,33 @@ a native module.
 
 ## Verification: CI
 
-**No CI run covers the Phase 3, Phase 4, or Phase 5 commits, the Phase 7
-commits, or the Phase 8 commits: the phases are committed locally (`5f63579`
-→ `23be31e`) but not pushed** (by policy, pushes require explicit
-authorization). The last pushed state, `9c3e98b` (documentation for the
-facade milestone; runtime code `92398f3`/`431d894`), is green in run
+**The full pushed history is covered, and every milestone's final commit is
+green.** The latest pushed commit, `99fcbb6` (the Wayland hardening of the
+input verify scripts; run
+[39029252348](https://github.com/neverseeyouagainnnnn/mikan/actions/runs/39029252348)),
+and the Phase 8 milestone commit `23be31e` (run
+[39025956812](https://github.com/neverseeyouagainnnnn/mikan/actions/runs/39025956812))
+pass all four jobs: Quality (formatting, types, tests, clippy, the release
+build, and the generator check), the headless smoke test (the demo, the
+captured-frame check, and the input, action-mapping, camera, ecs, collision,
+scripting, scene, showcase, stress, pixel-perfect, and asset verifications),
+and the Windows and macOS compile checks — the first CI compiles of the C
+collision kernel, the C transform kernel and C++ scene graph, the C input
+backend and C++ action runtime, and the vendored Luau C++. Two earlier pushes
+were red and are recorded as such: `860d698` (the first scene/entity commit;
+the macOS compile check failed, fixed in `07c6c33`) and `773589e` (the first
+input commit; `cargo fmt --check` failed, fixed in `23be31e`). Phase 5's
+`5f63579` run was cancelled when a later push superseded it. The earlier
+facade-milestone state `9c3e98b` remains green in run
 [38753924627](https://github.com/neverseeyouagainnnnn/mikan/actions/runs/38753924627).
-The repository's `.github/workflows/ci.yml` and `scripts/verify.sh` now also run
-the generator check; the ecs, collision, scripting, scene, and
-action-mapping-input verifications; and the showcase, stress, pixel-perfect, and
-asset-failure verifications, so the next authorized push will exercise them in
-CI. The Windows/macOS compile checks will then build the C collision kernel, the
-C transform kernel and C++ scene graph, the C input backend and C++ action
-runtime, and the vendored Luau C++ for the first time; the GitHub runners ship
-the required toolchains, but that has not been exercised here (no push since
-they were added).
 
 ## Verification levels by platform (ADR 0005)
 
 | Platform | Level | Evidence |
 | --- | --- | --- |
-| Linux / X11 (software Vulkan) | **runtime-verified** | local smoke, input (raw lane and action-mapping lane), camera, ecs, collision, scripting, scene, showcase, stress, pixel-perfect, and asset-failure checks; CI smoke job for the previous milestone |
-| Windows x86-64 | **compile-verified** for the previous milestone | CI `cargo check --workspace --all-targets`; the new crates — including the C collision kernel, the C transform kernel and C++ scene graph, the C input backend and C++ action runtime, and the vendored Luau C++ — have not been compile-checked on Windows or macOS yet (no push since they were added) |
-| macOS (arm64) | **compile-verified** for the previous milestone | as above |
+| Linux / X11 (software Vulkan) | **runtime-verified** | local smoke, input (raw lane and action-mapping lane), camera, ecs, collision, scripting, scene, showcase, stress, pixel-perfect, and asset-failure checks; the CI smoke job runs the same verifications (run 39025956812) |
+| Windows x86-64 | **compile-verified** for the latest milestone | CI `cargo check --workspace --all-targets` builds every crate, including the native modules, on windows-latest (run 39025956812) |
+| macOS (arm64) | **compile-verified** for the latest milestone | as above, on macos-latest (run 39025956812) |
 | Linux / Wayland | not verified | path exists through `winit`; never exercised |
 | Hardware GPU / Windows / macOS runtime | not verified | no such machine in the verification environment |
 
