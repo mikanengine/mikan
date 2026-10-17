@@ -1,24 +1,24 @@
 # Mikan status
 
 - **Date:** 2026-10-17
-- **Revision:** `main` @ `99fcbb6` ("verification: force the X11 backend in the
-  input verify scripts"), the last pushed commit, plus local, unpushed commits:
-  `cb27f88` (the Phase 8 CI record), `a3f77e8` (the Phase 9 audio milestone —
-  the audio-sys and audio crates, the WAV decoder, the demo2d `--audio` lane,
-  the bench and verify scripts, ADR 0014, `docs/audio.md`, and the refreshed
-  README, ARCHITECTURE, DEVELOPMENT, CHANGELOG, FFI, and STATUS text), and this
-  commit (which records them here). The earlier history is described in the
-  previous revision of this header: the Phase 3 change set as eight commits
-  (`991c17e`..`5c95578`), Phase 4 (ECS-lite) as five
-  (`813cbc2`..`0f74e34`), Phase 5 (collision + Luau scripting) as `5f63579`,
-  the Phase 7 (scene and entity system) change set plus the crate-directory
-  renames (`crates/mikan-*` → `crates/*`) as `860d698` and its follow-up
-  kernel-driver fix as `07c6c33`, and the Phase 8 input work as `773589e` (the
-  bulk) and `23be31e` (the C++-runtime release fix, the build-resource tuning,
-  and the documentation). **Pushes and CI runs still require explicit
-  authorization**, so the "Verification: CI" section below records the last
-  pushed state, and every claim in this document comes from local runs on
-  this machine.
+- **Revision:** `main` @ `0759da7` ("fix: gate synthetic input on the demo's
+  first presented frame"), pushed to `origin/main` with a clean working tree.
+  `origin/main` also carries `cb27f88` (the Phase 8 CI record), `a3f77e8`
+  (the Phase 9 audio milestone — the audio-sys and audio crates, the WAV
+  decoder, the demo2d `--audio` lane, the bench and verify scripts, ADR 0014,
+  `docs/audio.md`, and the refreshed README, ARCHITECTURE, DEVELOPMENT,
+  CHANGELOG, FFI, and STATUS text), `43b0626` (the STATUS milestone record),
+  and this commit (which records the CI run that covers the push). The earlier
+  history is described in the previous revision of this header: the Phase 3
+  change set as eight commits (`991c17e`..`5c95578`), Phase 4 (ECS-lite) as
+  five (`813cbc2`..`0f74e34`), Phase 5 (collision + Luau scripting) as
+  `5f63579`, the Phase 7 (scene and entity system) change set plus the
+  crate-directory renames (`crates/mikan-*` → `crates/*`) as `860d698` and its
+  follow-up kernel-driver fix as `07c6c33`, and the Phase 8 input work as
+  `773589e` (the bulk) and `23be31e` (the C++-runtime release fix, the
+  build-resource tuning, and the documentation). **Pushes and CI runs still
+  require explicit authorization**, and every claim in this document is a
+  local run or a recorded CI run quoted above.
 - **Purpose:** state precisely what is implemented, how each claim was verified,
   and what is known to be missing. Verification levels follow ADR 0005: nothing
   is called *verified* unless it was run.
@@ -690,45 +690,46 @@ Until that run happens, this milestone does not claim the Valgrind item of
 ## Verification: CI
 
 **The full pushed history is covered, and every milestone's final commit is
-green.** The latest pushed commit, `99fcbb6` (the Wayland hardening of the
-input verify scripts; run
-[39029252348](https://github.com/neverseeyouagainnnnn/mikan/actions/runs/39029252348)),
+green.** The latest pushed commit, `0759da7` (the audio milestone `a3f77e8`,
+its STATUS record `43b0626`, and the input-injection readiness fix; run
+[39041773079](https://github.com/mikanengine/mikan/actions/runs/39041773079)),
+the input hardening `99fcbb6` (run
+[39029252348](https://github.com/mikanengine/mikan/actions/runs/39029252348)),
 and the Phase 8 milestone commit `23be31e` (run
-[39025956812](https://github.com/neverseeyouagainnnnn/mikan/actions/runs/39025956812))
+[39025956812](https://github.com/mikanengine/mikan/actions/runs/39025956812))
 pass all four jobs: Quality (formatting, types, tests, clippy, the release
 build, and the generator check), the headless smoke test (the demo, the
-captured-frame check, and the input, action-mapping, camera, ecs, collision,
-scripting, scene, showcase, stress, pixel-perfect, and asset verifications),
-and the Windows and macOS compile checks — the first CI compiles of the C
-collision kernel, the C transform kernel and C++ scene graph, the C input
-backend and C++ action runtime, and the vendored Luau C++. Two earlier pushes
-were red and are recorded as such: `860d698` (the first scene/entity commit;
-the macOS compile check failed, fixed in `07c6c33`) and `773589e` (the first
-input commit; `cargo fmt --check` failed, fixed in `23be31e`). Phase 5's
-`5f63579` run was cancelled when a later push superseded it. The earlier
-facade-milestone state `9c3e98b` remains green in run
-[38753924627](https://github.com/neverseeyouagainnnnn/mikan/actions/runs/38753924627).
+captured-frame check, and the input, action-mapping, **audio**, camera, ecs,
+collision, scripting, scene, showcase, stress, pixel-perfect, and asset
+verifications), and the Windows and macOS compile checks — the first CI
+compiles of the C collision kernel, the C transform kernel and C++ scene
+graph, the C input backend and C++ action runtime, the vendored Luau C++, and
+now the C audio device backend over vendored miniaudio and the C++ mixer. Two
+earlier pushes were red and are recorded as such: `860d698` (the first
+scene/entity commit; the macOS compile check failed, fixed in `07c6c33`) and
+`773589e` (the first input commit; `cargo fmt --check` failed, fixed in
+`23be31e`). Phase 5's `5f63579` run was cancelled when a later push superseded
+it. The earlier facade-milestone state `9c3e98b` remains green in run
+[38753924627](https://github.com/mikanengine/mikan/actions/runs/38753924627).
 
-**This revision (the audio milestone) is unpushed, so no CI run covers it
-yet.** The workflow's smoke job now also runs
-`xvfb-run -a bash scripts/verify_audio.sh` (on the runners, which have no sound
-card, the lane exercises the documented `NO_DEVICE` fallback and the offline
-mixer path — the same one this machine verified locally), and the quality
-job's `cargo test --workspace` includes every new audio test plus
-`generate_assets.py --check` over the new `blip.wav`. The first push of this
-change set is the point at which those claims become CI-verified; until then
-they are local-run claims, listed as such above.
+The audio-verifying CI claims are concrete: on the sound-card-less runners,
+`verify_audio.sh` passes **by way of the documented `NO_DEVICE` fallback**
+(the same offline path verified locally), the quality job's
+`cargo test --workspace` covers the 24 audio-sys integration tests, the 9
+safe-API unit tests plus the doctest, and the 20 new WAV-decoder tests, and
+`generate_assets.py --check` covers the committed `blip.wav`. Windows and
+macOS compile the native audio layer for the first time in CI.
 
 ## Verification levels by platform (ADR 0005)
 
 | Platform | Level | Evidence |
 | --- | --- | --- |
-| Linux / X11 (software Vulkan) | **runtime-verified** | local smoke, input (raw lane and action-mapping lane), audio (device attempt + offline mixer, blip through the asset pipeline, counters), camera, ecs, collision, scripting, scene, showcase, stress, pixel-perfect, and asset-failure checks; the CI smoke job runs the same verifications plus `verify_audio.sh` (input-era runs 39029252348/39025956812; the audio run is pending the first push) |
-| Windows x86-64 | **compile-verified** for the pushed milestones | CI `cargo check --workspace --all-targets` builds every crate, including the native modules and vendored miniaudio, on windows-latest (run 39025956812 for the input milestone; the audio change set is unpushed) |
-| macOS (arm64) | **compile-verified** for the pushed milestones | as above, on macos-latest (run 39025956812 for the input milestone; the audio change set is unpushed) |
+| Linux / X11 (software Vulkan) | **runtime-verified** | local smoke, input (raw lane and action-mapping lane), audio (device attempt + offline mixer, blip through the asset pipeline, counters), camera, ecs, collision, scripting, scene, showcase, stress, pixel-perfect, and asset-failure checks; the CI smoke job runs the same verifications plus `verify_audio.sh` (run 39041773079, with the audio lane on the runners' documented `NO_DEVICE` fallback) |
+| Windows x86-64 | **compile-verified** | CI `cargo check --workspace --all-targets` builds every crate, including the native modules and vendored miniaudio, on windows-latest (run 39041773079) |
+| macOS (arm64) | **compile-verified** | as above, on macos-latest including the native audio layer (run 39041773079) |
 | Linux / Wayland | not verified | path exists through `winit`; never exercised |
 | Hardware GPU / Windows / macOS runtime | not verified | no such machine in the verification environment |
-| Any machine with a real sound card | **not verified** | this machine has no ALSA/PulseAudio/JACK and no `/dev/snd`, so the device path has only been exercised to its documented `NO_DEVICE` outcome; the mixer it would run is the same one the offline backend runs |
+| Any machine with a real sound card | **not verified** | no machine in the verification environment has one, so the device path has only been exercised to its documented `NO_DEVICE` outcome (locally and on the CI runners); the mixer it would run is the same one the offline backend runs |
 
 ## Known limitations
 
@@ -810,7 +811,7 @@ they are local-run claims, listed as such above.
   hardware-GPU measurement exists, so the 10,000-sprite figure is a measured
   floor of what the pipeline submits (one draw call), not a hardware estimate.
 
-## Milestone changes (Phases 3–7 committed locally; Phases 8 and 9 committed and unpushed)
+## Milestone changes (Phases 3–7 committed locally; Phases 8 and 9 pushed)
 
 The facade milestone (`5ffe1c7`, `431d894`, documentation `92398f3`/`9c3e98b`)
 plus the Phase 3 change set, committed locally on 2026-10-16 as eight commits
