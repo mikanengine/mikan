@@ -17,6 +17,7 @@ mikan-assets.workspace = true
 mikan-collision.workspace = true
 mikan-core.workspace = true
 mikan-ecs.workspace = true
+mikan-input.workspace = true
 mikan-platform.workspace = true
 mikan-render.workspace = true
 mikan-scene.workspace = true

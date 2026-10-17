@@ -3,12 +3,69 @@
 //! The platform runner translates window events into calls on [`InputState`].
 //! Applications only read from it: the state is written by exactly one place,
 //! which keeps the "who owns input" question trivial.
+//!
+//! Alongside the state, the runner records every device event it receives
+//! into one per-frame [`DeviceEvent`] log (see
+//! [`take_events`](InputState::take_events)). The log is what the action
+//! mapping layer (`mikan-input`) consumes: it streams the window system's
+//! device events — including repeats and wheel scrolls, which held-state
+//! queries cannot express — to whatever code wants to process them, without
+//! the platform layer knowing about action mapping.
 
 use std::collections::HashSet;
 
 use winit::dpi::PhysicalPosition;
-use winit::event::{ElementState, MouseButton};
+use winit::event::{ElementState, MouseButton, MouseScrollDelta};
 use winit::keyboard::PhysicalKey;
+
+/// One device event the window system produced this frame, in arrival order.
+///
+/// The events are the raw stream, not the [state](InputState): repeats,
+/// duplicate presses, and wheel scrolls appear exactly as the window system
+/// produced them. Everything downstream normalizes what it needs to.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum DeviceEvent {
+    /// A key transition. `repeat` marks an operating-system key repeat.
+    Key {
+        /// The physical key, layout independent.
+        key: PhysicalKey,
+        /// Whether the key went down (`false` means it came up).
+        pressed: bool,
+        /// Whether this press is a repeat of a held key.
+        repeat: bool,
+    },
+    /// A mouse-button transition.
+    MouseButton {
+        /// Which button.
+        button: MouseButton,
+        /// Whether it went down (`false` means it came up).
+        pressed: bool,
+    },
+    /// The cursor is at an absolute physical-pixel position.
+    CursorMoved {
+        /// The position in physical pixels.
+        position: PhysicalPosition<f64>,
+    },
+    /// The wheel scrolled. The delta is normalized to pixels: line-based
+    /// scrolling is scaled by the conventional 24 pixels per line, pixel-
+    /// based scrolling passes through.
+    MouseWheel {
+        /// The `(x, y)` scroll delta.
+        delta: (f64, f64),
+    },
+    /// The window's keyboard focus changed.
+    FocusChanged {
+        /// Whether the window is now focused.
+        focused: bool,
+    },
+}
+
+/// How many device events one frame's log holds before dropping the newest.
+///
+/// A full log means more than [`MAX_FRAME_EVENTS`] device events arrived in
+/// one frame, which is not a stream a game can meaningfully replay. The
+/// dropped count [`InputState::dropped_events`] reports how many.
+const MAX_FRAME_EVENTS: usize = 1024;
 
 /// Snapshot of the input devices for the duration of one frame.
 ///
@@ -20,6 +77,12 @@ use winit::keyboard::PhysicalKey;
 ///   [`end_frame`](InputState::end_frame).
 ///
 /// Keyboard state is tracked by physical key, so it is layout independent.
+///
+/// The per-frame [`DeviceEvent`] log lives beside this: [`take_events`]
+/// drains it for a step that wants the raw stream, and [`end_frame`] clears
+/// exactly what is left over when it clears the edge state.
+///
+/// [`take_events`]: InputState::take_events
 #[derive(Debug, Default)]
 pub struct InputState {
     keys: HashSet<PhysicalKey>,
@@ -30,7 +93,10 @@ pub struct InputState {
     mouse_just_released: HashSet<MouseButton>,
     cursor: Option<PhysicalPosition<f64>>,
     cursor_delta: (f64, f64),
+    wheel_delta: (f64, f64),
     focused: bool,
+    events: Vec<DeviceEvent>,
+    dropped_events: usize,
 }
 
 impl InputState {
@@ -90,10 +156,50 @@ impl InputState {
         self.cursor_delta
     }
 
+    /// Cumulative wheel scroll since the last [`end_frame`](Self::end_frame),
+    /// in pixels: `(x, y)`.
+    #[must_use]
+    pub fn wheel_delta(&self) -> (f64, f64) {
+        self.wheel_delta
+    }
+
+    /// How many device events were dropped because one frame's log overflowed.
+    ///
+    /// Overflow means more than [`MAX_FRAME_EVENTS`] device events arrived in
+    /// one frame, which no gameplay loop replays meaningfully; everything
+    /// before the overflow is still in the log.
+    #[must_use]
+    pub fn dropped_events(&self) -> usize {
+        self.dropped_events
+    }
+
     /// Whether the window currently has keyboard focus.
     #[must_use]
     pub fn is_focused(&self) -> bool {
         self.focused
+    }
+
+    /// Drains the frame's recorded device events into `out`, which is
+    /// cleared first and extended in arrival order.
+    ///
+    /// Callers should drain once per fixed step: the first step of a frame
+    /// receives everything accumulated since the last drained step, later
+    /// steps receive nothing, and a frame that runs no fixed step keeps its
+    /// events for the next one — exactly the visibility contract the press/
+    /// release edges follow. [`end_frame`](Self::end_frame) clears whatever
+    /// a step did not take.
+    pub fn take_events(&mut self, out: &mut Vec<DeviceEvent>) {
+        out.clear();
+        out.append(&mut self.events);
+    }
+
+    /// Records one device event in the frame's log.
+    fn record(&mut self, event: DeviceEvent) {
+        if self.events.len() == MAX_FRAME_EVENTS {
+            self.dropped_events += 1;
+            return;
+        }
+        self.events.push(event);
     }
 
     /// Records a key transition.
@@ -101,6 +207,12 @@ impl InputState {
     /// `repeat` marks a key repeat generated by the operating system; repeats do
     /// not produce a new "just pressed" edge.
     pub fn handle_key(&mut self, key: PhysicalKey, state: ElementState, repeat: bool) {
+        let pressed = state == ElementState::Pressed;
+        self.record(DeviceEvent::Key {
+            key,
+            pressed,
+            repeat,
+        });
         match state {
             ElementState::Pressed => {
                 let first_press = self.keys.insert(key);
@@ -118,6 +230,8 @@ impl InputState {
 
     /// Records a mouse button transition.
     pub fn handle_mouse_button(&mut self, button: MouseButton, state: ElementState) {
+        let pressed = state == ElementState::Pressed;
+        self.record(DeviceEvent::MouseButton { button, pressed });
         match state {
             ElementState::Pressed => {
                 if self.mouse_buttons.insert(button) {
@@ -134,6 +248,7 @@ impl InputState {
 
     /// Records a cursor movement, accumulating the delta since the last frame.
     pub fn handle_cursor_moved(&mut self, position: PhysicalPosition<f64>) {
+        self.record(DeviceEvent::CursorMoved { position });
         if let Some(previous) = self.cursor {
             self.cursor_delta.0 += position.x - previous.x;
             self.cursor_delta.1 += position.y - previous.y;
@@ -141,9 +256,25 @@ impl InputState {
         self.cursor = Some(position);
     }
 
+    /// Records a wheel scroll, accumulating the pixel delta since the last
+    /// frame. Line-based scrolling is converted to the conventional 24
+    /// pixels per line, pixel-based scrolling passes through.
+    pub fn handle_mouse_wheel(&mut self, delta: MouseScrollDelta) {
+        let (dx, dy) = match delta {
+            MouseScrollDelta::LineDelta(x, y) => (f64::from(x) * 24.0, f64::from(y) * 24.0),
+            MouseScrollDelta::PixelDelta(position) => (position.x, position.y),
+        };
+        self.record(DeviceEvent::MouseWheel { delta: (dx, dy) });
+        self.wheel_delta.0 += dx;
+        self.wheel_delta.1 += dy;
+    }
+
     /// Records a focus change. Losing focus releases every held key and button,
     /// so a key cannot remain "stuck down" while the window is in the background.
     pub fn set_focused(&mut self, focused: bool) {
+        if self.focused != focused {
+            self.record(DeviceEvent::FocusChanged { focused });
+        }
         self.focused = focused;
         if !focused {
             self.release_all();
@@ -160,16 +291,20 @@ impl InputState {
         }
     }
 
-    /// Clears per-frame edge state and the accumulated cursor delta.
+    /// Clears per-frame edge state and the accumulated cursor and wheel
+    /// deltas.
     ///
     /// The runner calls this once per frame, after the application has been
-    /// updated and rendered.
+    /// updated and rendered. Whatever device events a step did not
+    /// [`take`](Self::take_events) are cleared with the rest.
     pub fn end_frame(&mut self) {
         self.keys_just_pressed.clear();
         self.keys_just_released.clear();
         self.mouse_just_pressed.clear();
         self.mouse_just_released.clear();
         self.cursor_delta = (0.0, 0.0);
+        self.wheel_delta = (0.0, 0.0);
+        self.events.clear();
     }
 }
 
@@ -267,5 +402,110 @@ mod tests {
         input.end_frame();
         assert!(input.is_mouse_button_pressed(MouseButton::Right));
         assert!(!input.is_mouse_button_just_pressed(MouseButton::Right));
+    }
+
+    #[test]
+    fn the_event_log_records_the_raw_stream_in_order() {
+        let mut input = InputState::new();
+        input.handle_key(KEY_D, ElementState::Pressed, false);
+        input.handle_key(KEY_D, ElementState::Pressed, true);
+        input.handle_mouse_button(MouseButton::Left, ElementState::Pressed);
+        input.handle_cursor_moved(PhysicalPosition::new(5.0, 6.0));
+        input.handle_mouse_wheel(MouseScrollDelta::LineDelta(1.0, -2.0));
+        input.set_focused(true);
+        input.set_focused(false);
+
+        let mut events = Vec::new();
+        input.take_events(&mut events);
+        assert_eq!(
+            events,
+            vec![
+                DeviceEvent::Key {
+                    key: KEY_D,
+                    pressed: true,
+                    repeat: false
+                },
+                DeviceEvent::Key {
+                    key: KEY_D,
+                    pressed: true,
+                    repeat: true
+                },
+                DeviceEvent::MouseButton {
+                    button: MouseButton::Left,
+                    pressed: true
+                },
+                DeviceEvent::CursorMoved {
+                    position: PhysicalPosition::new(5.0, 6.0)
+                },
+                DeviceEvent::MouseWheel {
+                    delta: (24.0, -48.0)
+                },
+                DeviceEvent::FocusChanged { focused: true },
+                DeviceEvent::FocusChanged { focused: false },
+            ]
+        );
+    }
+
+    #[test]
+    fn taking_the_log_leaves_it_empty_but_end_frame_clears_the_rest() {
+        let mut input = InputState::new();
+        input.handle_key(KEY_A, ElementState::Pressed, false);
+        let mut out = Vec::new();
+        input.take_events(&mut out);
+        assert_eq!(out.len(), 1);
+        input.handle_key(KEY_D, ElementState::Pressed, false);
+        input.end_frame();
+        input.take_events(&mut out);
+        assert!(
+            out.is_empty(),
+            "events a step did not take are cleared with the edges"
+        );
+    }
+
+    #[test]
+    fn wheel_deltas_line_and_pixel_are_normalized_to_pixels() {
+        let mut input = InputState::new();
+        input.handle_mouse_wheel(MouseScrollDelta::LineDelta(1.0, 2.0));
+        assert_eq!(input.wheel_delta(), (24.0, 48.0));
+        input.handle_mouse_wheel(MouseScrollDelta::PixelDelta(PhysicalPosition::new(
+            -3.0, 0.5,
+        )));
+        assert_eq!(
+            input.wheel_delta(),
+            (21.0, 48.5),
+            "deltas accumulate within a frame"
+        );
+        assert_eq!(
+            input.dropped_events(),
+            0,
+            "an ordinary frame never overflows"
+        );
+        input.end_frame();
+        assert_eq!(input.wheel_delta(), (0.0, 0.0));
+    }
+
+    #[test]
+    fn focus_changes_log_only_on_the_differences() {
+        let mut input = InputState::new();
+        input.set_focused(true);
+        input.set_focused(true);
+        let mut events = Vec::new();
+        input.take_events(&mut events);
+        assert_eq!(events, vec![DeviceEvent::FocusChanged { focused: true }]);
+    }
+
+    #[test]
+    fn an_overflowing_log_drops_the_newest_and_counts() {
+        let mut input = InputState::new();
+        for _ in 0..MAX_FRAME_EVENTS {
+            input.handle_cursor_moved(PhysicalPosition::new(0.0, 0.0));
+        }
+        assert_eq!(input.dropped_events(), 0);
+        input.handle_cursor_moved(PhysicalPosition::new(1.0, 1.0));
+        assert_eq!(input.dropped_events(), 1);
+
+        let mut events = Vec::new();
+        input.take_events(&mut events);
+        assert_eq!(events.len(), MAX_FRAME_EVENTS, "what fit is still recorded");
     }
 }

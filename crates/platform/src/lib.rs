@@ -48,7 +48,7 @@ mod runner;
 
 pub use app::{App, AppContext};
 pub use error::PlatformError;
-pub use input::InputState;
+pub use input::{DeviceEvent, InputState};
 pub use runner::run;
 
 /// Runs an application with the given configuration until its window closes.

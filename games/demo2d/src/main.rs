@@ -5,6 +5,7 @@
 //! sprite-stress scene. Assets are loaded from `games/demo2d/assets` at startup.
 //! See `--help` for the smoke-test options.
 
+mod actions;
 mod assets;
 mod blocks;
 mod cli;

@@ -88,11 +88,12 @@ pub trait App {
 /// Read-only engine state handed to application callbacks.
 ///
 /// The context is valid only for the duration of the callback. It intentionally
-/// exposes no way to mutate engine state other than requesting exit; resources
-/// owned by the application (such as a renderer) live in the application itself.
+/// exposes no way to mutate engine state other than requesting exit and
+/// draining the input event log; resources owned by the application (such as a
+/// renderer) live in the application itself.
 pub struct AppContext<'a> {
     window: &'a Arc<Window>,
-    input: &'a InputState,
+    input: &'a mut InputState,
     config: &'a EngineConfig,
     time: &'a Time,
     alpha: f32,
@@ -102,7 +103,7 @@ pub struct AppContext<'a> {
 impl<'a> AppContext<'a> {
     pub(crate) fn new(
         window: &'a Arc<Window>,
-        input: &'a InputState,
+        input: &'a mut InputState,
         config: &'a EngineConfig,
         time: &'a Time,
         alpha: f32,
@@ -130,6 +131,16 @@ impl<'a> AppContext<'a> {
     /// Current input state.
     #[must_use]
     pub fn input(&self) -> &InputState {
+        self.input
+    }
+
+    /// Movable input state, for draining the per-frame device event log.
+    ///
+    /// The runner records every raw device event in [`InputState::take_events`]
+    /// order; an input system processes that stream in the first fixed update
+    /// of each frame, so all lower layers see exactly one batch per step.
+    #[must_use]
+    pub fn input_mut(&mut self) -> &mut InputState {
         self.input
     }
 

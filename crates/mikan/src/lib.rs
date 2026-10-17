@@ -83,6 +83,7 @@ pub use mikan_assets;
 pub use mikan_collision;
 pub use mikan_core;
 pub use mikan_ecs;
+pub use mikan_input;
 pub use mikan_platform;
 pub use mikan_render;
 pub use mikan_scene;
@@ -95,8 +96,11 @@ pub use mikan_assets::{Image, ImageError, SheetError, SheetFrame, SpriteSheet};
 pub use mikan_collision::{Aabb, Broadphase, Contact, Pair, contacts};
 pub use mikan_core::{Camera2d, Color, EngineConfig, FrameOutcome, Time, init_logging};
 pub use mikan_ecs::{DeadEntity, Entity, Schedule, World};
+pub use mikan_input::{
+    ActionId, ActionState, Binding, ContextId, InputError, InputSystem, WheelAxis,
+};
 pub use mikan_platform::{
-    AppContext, InputState, KeyCode, PhysicalKey, PhysicalSize, PlatformError,
+    AppContext, DeviceEvent, InputState, KeyCode, PhysicalKey, PhysicalSize, PlatformError,
 };
 pub use mikan_render::{
     CaptureBuffer, Frame, FrameStats, RenderError, RenderSettings, Renderer, SamplerMode, Sprite,

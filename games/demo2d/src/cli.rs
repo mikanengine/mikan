@@ -122,6 +122,12 @@ pub struct Cli {
     pub script: PathBuf,
     /// Sprite count of the stress scene; `None` uses the default.
     pub sprites: Option<u32>,
+    /// Route input through the action-mapping pipeline (`--actions`).
+    ///
+    /// The controls stay identical; reads go through `mikan-input` instead of
+    /// raw [`InputState`](mikan::InputState) queries, demonstrating the
+    /// native action-mapping lane end to end.
+    pub actions: bool,
 }
 
 impl Default for Cli {
@@ -141,6 +147,7 @@ impl Default for Cli {
             assets: PathBuf::from(DEFAULT_ASSETS_DIR),
             script: PathBuf::from(DEFAULT_SCRIPT),
             sprites: None,
+            actions: false,
         }
     }
 }
@@ -215,6 +222,12 @@ impl Cli {
                         return Err(CliError::DuplicateArgument(argument));
                     }
                     cli.stats = true;
+                }
+                "--actions" => {
+                    if cli.actions {
+                        return Err(CliError::DuplicateArgument(argument));
+                    }
+                    cli.actions = true;
                 }
                 "--no-vsync" => {
                     if no_vsync {
@@ -448,6 +461,8 @@ OPTIONS:
     --pixel-perfect <WxH> Integer-zoom pixel-perfect camera for a WxH virtual screen
     --no-vsync            Present uncapped, for benchmarking
     --sprites <N>         Sprite count of the stress scene (default 10000)
+    --actions             Read controls through the action-mapping pipeline
+                          (contexts + bindings instead of raw key queries)
     -h, --help            Print this help
 
 SCENES:

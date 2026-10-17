@@ -1019,6 +1019,7 @@ dependencies = [
  "mikan-collision",
  "mikan-core",
  "mikan-ecs",
+ "mikan-input",
  "mikan-platform",
  "mikan-render",
  "mikan-scene",
@@ -1067,6 +1068,25 @@ name = "mikan-ecs"
 version = "0.1.0"
 dependencies = [
  "thiserror 2.0.21",
+]
+
+[[package]]
+name = "mikan-input"
+version = "0.1.0"
+dependencies = [
+ "log",
+ "mikan-core",
+ "mikan-input-sys",
+ "mikan-platform",
+ "thiserror 2.0.21",
+ "winit",
+]
+
+[[package]]
+name = "mikan-input-sys"
+version = "0.1.0"
+dependencies = [
+ "cc",
 ]
 
 [[package]]

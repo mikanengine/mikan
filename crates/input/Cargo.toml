@@ -1,0 +1,21 @@
+[package]
+name = "mikan-input"
+description = "The input system for Mikan: action mapping, input contexts, and safe engine integration over the native device backend and action runtime."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+mikan-core.workspace = true
+mikan-input-sys.workspace = true
+mikan-platform.workspace = true
+log.workspace = true
+thiserror.workspace = true
+winit.workspace = true

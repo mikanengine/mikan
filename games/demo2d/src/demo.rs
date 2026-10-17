@@ -25,12 +25,13 @@
 use std::time::Duration;
 
 use mikan::{
-    Camera2d, CaptureBuffer, DeadEntity, Engine, Entity, Frame, FrameOutcome, FrameStats, Game,
-    KeyCode, PhysicalKey, RenderError, SamplerMode, Scene, ScriptEngine, ScriptError, Sprite,
-    StepInput, Transform2d,
+    Camera2d, CaptureBuffer, DeadEntity, DeviceEvent, Engine, Entity, Frame, FrameOutcome,
+    FrameStats, Game, KeyCode, PhysicalKey, RenderError, SamplerMode, Scene, ScriptEngine,
+    ScriptError, Sprite, StepInput, Transform2d,
 };
 use thiserror::Error;
 
+use crate::actions::ActionMapping;
 use crate::assets::{AssetError, Assets};
 use crate::blocks;
 use crate::cli::{CameraMode, Cli, Scene as DemoScene};
@@ -67,6 +68,10 @@ pub enum DemoError {
     #[error(transparent)]
     Script(#[from] ScriptError),
 
+    /// The action-mapping lane rejected an operation.
+    #[error(transparent)]
+    Input(#[from] mikan::InputError),
+
     /// The requested frames were not presented within the timeout.
     #[error(
         "presented {presented} of {requested} requested frames within {timeout_secs}s; \
@@ -86,6 +91,23 @@ pub enum DemoError {
     CaptureUnsupported,
 }
 
+/// One step's already-resolved control intents, shared by the two input
+/// lanes: the Luau script and the hierarchy spin read exactly these
+/// five booleans whichever lane produced them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+struct Intent {
+    /// Move left this step.
+    left: bool,
+    /// Move right this step.
+    right: bool,
+    /// Move up this step.
+    up: bool,
+    /// Move down this step.
+    down: bool,
+    /// F fired this step (despawn the moon in the hierarchy scene).
+    despawn_moon: bool,
+}
+
 /// Demo application state.
 pub struct Demo {
     cli: Cli,
@@ -101,6 +123,11 @@ pub struct Demo {
     hierarchy: Option<HierarchyScene>,
     /// The gameplay script driving the player, loaded in [`Game::init`].
     script: Option<ScriptEngine>,
+    /// The `--actions` lane: action mapping over the native input module.
+    /// `None` reads raw keys from [`mikan::InputState`] as before.
+    actions: Option<ActionMapping>,
+    /// Steps in which the wheel action carried a nonzero value.
+    wheel_ticks: u32,
     /// A script step error has already been logged; later ones are suppressed
     /// so a broken script cannot flood the log at 120 Hz.
     script_error_reported: bool,
@@ -123,6 +150,97 @@ pub struct Demo {
 }
 
 impl Demo {
+    /// Advances one fixed step from already-resolved intents: the movement
+    /// booleans and whether F fired this step.
+    fn step_with(
+        &mut self,
+        engine: &mut Engine<'_, '_>,
+        dt: Duration,
+        intent: Intent,
+    ) -> Result<(), DemoError> {
+        let Intent {
+            left,
+            right,
+            up,
+            down,
+            despawn_moon,
+        } = intent;
+        // The step's external state, written before the systems run: the
+        // controls the gameplay script asks for, the region the player is
+        // kept in, and the hierarchy's spin. The script sees the held keys,
+        // the step duration, and the player's position — never the world.
+        let position = self
+            .player
+            .and_then(|entity| self.scene.world().get::<Transform2d>(entity))
+            .map_or([0.0, 0.0], |transform| transform.translation);
+        let controls = match self.script.as_ref() {
+            Some(script) => match script.call_step(StepInput {
+                dt: dt.as_secs_f32(),
+                left,
+                right,
+                up,
+                down,
+                position,
+            }) {
+                Ok(output) => Controls {
+                    direction: output.direction,
+                    speed: output.speed,
+                },
+                // A gameplay bug must not kill the run: log the first error
+                // with its script and line, then idle for the step.
+                Err(error) => {
+                    if !self.script_error_reported {
+                        log::error!("script error: {error}");
+                        self.script_error_reported = true;
+                    }
+                    Controls {
+                        direction: [0.0, 0.0],
+                        speed: 0.0,
+                    }
+                }
+            },
+            None => Controls {
+                direction: [0.0, 0.0],
+                speed: 0.0,
+            },
+        };
+        let spin = match (left, right) {
+            (false, true) => hierarchy::SPIN_SPEED,
+            (true, false) => -hierarchy::SPIN_SPEED,
+            _ => 0.0,
+        };
+        let (width, height) = engine.renderer().size();
+        let view = self.world_view([width as f32, height as f32]);
+
+        self.scene.world_mut().insert_resource(controls);
+        self.scene.world_mut().insert_resource(WorldBounds(view));
+        self.scene
+            .world_mut()
+            .insert_resource(hierarchy::Spin(spin));
+        // The moon is removed through the scene's deferred queue, so the
+        // despawn is applied at the next update's flush point rather than
+        // mid-step.
+        if despawn_moon && let Some(bodies) = self.hierarchy {
+            log::info!("F pressed; despawning the moon");
+            self.scene.despawn_later(bodies.moon());
+        }
+
+        let before = self
+            .player
+            .and_then(|entity| self.scene.world().get::<Transform2d>(entity))
+            .map(|transform| transform.translation);
+        self.scene.update(dt);
+        self.fixed_steps += 1;
+        let after = self
+            .player
+            .and_then(|entity| self.scene.world().get::<Transform2d>(entity))
+            .map(|transform| transform.translation);
+        if before != after {
+            self.moved_steps += 1;
+        }
+        Ok(())
+    }
+
     /// Builds the demo from parsed command-line options.
     #[must_use]
     pub fn new(cli: Cli) -> Self {
@@ -135,6 +253,8 @@ impl Demo {
             player: None,
             hierarchy: None,
             script: None,
+            actions: None,
+            wheel_ticks: 0,
             script_error_reported: false,
             fixed_steps: 0,
             moved_steps: 0,
@@ -413,6 +533,19 @@ impl Game for Demo {
             );
         }
         log::info!("controls: WASD or arrow keys to move, Escape to quit");
+        if self.cli.actions {
+            let mapping = ActionMapping::new()?;
+            let contexts: Vec<String> = mapping
+                .contexts()
+                .iter()
+                .map(|id| format!("{id}"))
+                .collect();
+            log::info!(
+                "input: action mapping active (contexts {})",
+                contexts.join(", "),
+            );
+            self.actions = Some(mapping);
+        }
 
         // Start where the scene's default view is centered: the visible world
         // region's middle, so the player is on screen in every mode.
@@ -474,101 +607,69 @@ impl Game for Demo {
     }
 
     fn update(&mut self, engine: &mut Engine<'_, '_>, dt: Duration) -> Result<(), DemoError> {
-        if engine
-            .ctx()
-            .input()
-            .is_key_just_pressed(PhysicalKey::Code(KeyCode::Escape))
-        {
-            log::info!("escape pressed; quitting");
-            engine.ctx().request_exit();
+        // The engine runs two input lanes. With `--actions`, the step's
+        // device events drain into the native pipeline and gameplay asks for
+        // actions; the edges are step-scoped, cleared by `end_step` below.
+        // Without it, the (frame-scoped, read-only) InputState snapshot
+        // answers the same questions, which is what the verify scripts drive.
+        let intent = if let Some(mapping) = self.actions.as_mut() {
+            let mut events: Vec<DeviceEvent> = Vec::new();
+            engine.ctx().input_mut().take_events(&mut events);
+            mapping.process(&events)?;
+            let movement = mapping.movement();
+            let despawn = mapping.despawn_pressed();
+            let quit = mapping.quit_pressed();
+            let scroll = mapping.scroll_y();
+            mapping.end_step();
+            if quit {
+                log::info!("escape pressed; quitting");
+                engine.ctx().request_exit();
+                return Ok(());
+            }
+            self.wheel_ticks += u32::from(scroll != 0.0);
+            Some((movement, despawn))
+        } else {
+            None
+        };
+        if let Some((movement, despawn_moon)) = intent {
+            let (left, right, up, down) = movement;
+            self.step_with(
+                engine,
+                dt,
+                Intent {
+                    left,
+                    right,
+                    up,
+                    down,
+                    despawn_moon,
+                },
+            )?;
             return Ok(());
         }
-
-        // The step's external state, written before the systems run: the
-        // controls the gameplay script asks for, the region the player is
-        // kept in, and the hierarchy's spin. The script sees the held keys,
-        // the step duration, and the player's position — never the world.
-        let (left, right, up, down, despawn_moon) = {
+        // The raw-key lane: the borrow below ends inside this block, before
+        // `step_with` borrows the engine again. Escape comes first, exactly
+        // as it did before the action lane existed.
+        {
+            let escape_pressed = engine
+                .ctx()
+                .input()
+                .is_key_just_pressed(PhysicalKey::Code(KeyCode::Escape));
+            if escape_pressed {
+                log::info!("escape pressed; quitting");
+                engine.ctx().request_exit();
+                return Ok(());
+            }
             let input = engine.ctx().input();
             let held = |key: KeyCode| input.is_key_pressed(PhysicalKey::Code(key));
-            (
-                held(KeyCode::KeyA) || held(KeyCode::ArrowLeft),
-                held(KeyCode::KeyD) || held(KeyCode::ArrowRight),
-                held(KeyCode::KeyW) || held(KeyCode::ArrowUp),
-                held(KeyCode::KeyS) || held(KeyCode::ArrowDown),
-                input.is_key_just_pressed(PhysicalKey::Code(KeyCode::KeyF)),
-            )
-        };
-        let position = self
-            .player
-            .and_then(|entity| self.scene.world().get::<Transform2d>(entity))
-            .map_or([0.0, 0.0], |transform| transform.translation);
-        let controls = match self.script.as_ref() {
-            Some(script) => match script.call_step(StepInput {
-                dt: dt.as_secs_f32(),
-                left,
-                right,
-                up,
-                down,
-                position,
-            }) {
-                Ok(output) => Controls {
-                    direction: output.direction,
-                    speed: output.speed,
-                },
-                // A gameplay bug must not kill the run: log the first error
-                // with its script and line, then idle for the step.
-                Err(error) => {
-                    if !self.script_error_reported {
-                        log::error!("script error: {error}");
-                        self.script_error_reported = true;
-                    }
-                    Controls {
-                        direction: [0.0, 0.0],
-                        speed: 0.0,
-                    }
-                }
-            },
-            None => Controls {
-                direction: [0.0, 0.0],
-                speed: 0.0,
-            },
-        };
-        let spin = match (left, right) {
-            (false, true) => hierarchy::SPIN_SPEED,
-            (true, false) => -hierarchy::SPIN_SPEED,
-            _ => 0.0,
-        };
-        let (width, height) = engine.renderer().size();
-        let view = self.world_view([width as f32, height as f32]);
-
-        self.scene.world_mut().insert_resource(controls);
-        self.scene.world_mut().insert_resource(WorldBounds(view));
-        self.scene
-            .world_mut()
-            .insert_resource(hierarchy::Spin(spin));
-        // The moon is removed through the scene's deferred queue, so the
-        // despawn is applied at the next update's flush point rather than
-        // mid-step.
-        if despawn_moon && let Some(bodies) = self.hierarchy {
-            log::info!("F pressed; despawning the moon");
-            self.scene.despawn_later(bodies.moon());
+            let intent = Intent {
+                left: held(KeyCode::KeyA) || held(KeyCode::ArrowLeft),
+                right: held(KeyCode::KeyD) || held(KeyCode::ArrowRight),
+                up: held(KeyCode::KeyW) || held(KeyCode::ArrowUp),
+                down: held(KeyCode::KeyS) || held(KeyCode::ArrowDown),
+                despawn_moon: input.is_key_just_pressed(PhysicalKey::Code(KeyCode::KeyF)),
+            };
+            self.step_with(engine, dt, intent)
         }
-
-        let before = self
-            .player
-            .and_then(|entity| self.scene.world().get::<Transform2d>(entity))
-            .map(|transform| transform.translation);
-        self.scene.update(dt);
-        self.fixed_steps += 1;
-        let after = self
-            .player
-            .and_then(|entity| self.scene.world().get::<Transform2d>(entity))
-            .map(|transform| transform.translation);
-        if before != after {
-            self.moved_steps += 1;
-        }
-        Ok(())
     }
 
     fn render(&mut self, engine: &mut Engine<'_, '_>) -> Result<FrameOutcome, DemoError> {
@@ -664,5 +765,13 @@ impl Game for Demo {
             self.fixed_steps,
             self.moved_steps,
         );
+        if self.actions.is_some() {
+            log::info!(
+                "actions: {} fixed steps, {} moved, {} wheel ticks",
+                self.fixed_steps,
+                self.moved_steps,
+                self.wheel_ticks,
+            );
+        }
     }
 }

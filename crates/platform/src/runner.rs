@@ -120,7 +120,7 @@ impl<A: App> Runner<A> {
     /// is allowed to see.
     fn context<'a>(
         window: &'a Arc<Window>,
-        input: &'a InputState,
+        input: &'a mut InputState,
         config: &'a EngineConfig,
         time: &'a Time,
         alpha: f32,
@@ -148,7 +148,7 @@ impl<A: App> Runner<A> {
             let alpha = self.fixed.alpha();
             let mut ctx = Self::context(
                 &window,
-                &self.input,
+                &mut self.input,
                 &self.config,
                 &self.time,
                 alpha,
@@ -181,7 +181,7 @@ impl<A: App> Runner<A> {
             let alpha = self.fixed.alpha();
             let mut ctx = Self::context(
                 &window,
-                &self.input,
+                &mut self.input,
                 &self.config,
                 &self.time,
                 alpha,
@@ -200,7 +200,7 @@ impl<A: App> Runner<A> {
         let alpha = self.fixed.alpha();
         let mut ctx = Self::context(
             &window,
-            &self.input,
+            &mut self.input,
             &self.config,
             &self.time,
             alpha,
@@ -262,7 +262,7 @@ impl<A: App> ApplicationHandler for Runner<A> {
             let alpha = self.fixed.alpha();
             let mut ctx = Self::context(
                 &window,
-                &self.input,
+                &mut self.input,
                 &self.config,
                 &self.time,
                 alpha,
@@ -298,7 +298,7 @@ impl<A: App> ApplicationHandler for Runner<A> {
                     let alpha = self.fixed.alpha();
                     let mut ctx = Self::context(
                         &window,
-                        &self.input,
+                        &mut self.input,
                         &self.config,
                         &self.time,
                         alpha,
@@ -323,6 +323,10 @@ impl<A: App> ApplicationHandler for Runner<A> {
 
             WindowEvent::CursorMoved { position, .. } => {
                 self.input.handle_cursor_moved(position);
+            }
+
+            WindowEvent::MouseWheel { delta, .. } => {
+                self.input.handle_mouse_wheel(delta);
             }
 
             WindowEvent::Focused(focused) => {

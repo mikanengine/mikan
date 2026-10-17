@@ -22,6 +22,8 @@ mikan-collision = { path = "crates/collision", version = "0.1.0" }
 mikan-collision-sys = { path = "crates/collision-sys", version = "0.1.0" }
 mikan-core = { path = "crates/core", version = "0.1.0" }
 mikan-ecs = { path = "crates/ecs", version = "0.1.0" }
+mikan-input = { path = "crates/input", version = "0.1.0" }
+mikan-input-sys = { path = "crates/input-sys", version = "0.1.0" }
 mikan-platform = { path = "crates/platform", version = "0.1.0" }
 mikan-render = { path = "crates/render", version = "0.1.0" }
 mikan-scene = { path = "crates/scene", version = "0.1.0" }
