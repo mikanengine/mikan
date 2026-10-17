@@ -9,6 +9,13 @@
 # TIMEOUT_SECS, then source this file, call check_environment, install
 # `trap cleanup_demo EXIT`, and use start_demo to launch the demo.
 
+# These scripts drive the application over X11 (Xvfb or a desktop session) and
+# synthetic X11 input. On a machine that also runs a Wayland session, the
+# inherited WAYLAND_DISPLAY would make winit prefer Wayland: the window would
+# open on the real desktop and no X11 event could ever reach it. Force the X11
+# backend.
+unset WAYLAND_DISPLAY
+
 RUN_LOG=""
 WINDOW_ID=""
 DEMO_PID=""
